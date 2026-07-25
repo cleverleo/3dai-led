@@ -40,11 +40,15 @@ cd 3dai-led
 
 装完在 Claude Code 里打开一次 `/hooks` 菜单触发重载,然后随便说句话 —— 灯应该开始转彩虹。
 
+`--host` 首次安装必填 —— 猜一个默认值只会装出一套指向不存在设备、灯不亮也不报错的配置。之后重装可以省略,沿用 `settings.json` 里已有的地址。
+
 `install.sh` 会把 13 条 hook 写进 `~/.claude/settings.json`(写前自动备份,只动本项目自己的条目,你挂的其他命令原样保留),可以反复跑,不累积重复项。`./uninstall.sh` 卸载。两个脚本都支持 `--dry-run`。
 
 **代码是就地引用的** —— hook 里写的是本仓库中 `led.sh` 的绝对路径,不复制、不做软链接。改了代码立刻生效,代价是仓库不能挪窝:移动之后重跑一次 `./install.sh`。
 
-`~/.claude` 下只留两样东西:`settings.json` 里的 hook,和 Claude Code 强制要求的技能加载点 `skills/3dai-led/SKILL.md`。代码和运行时数据都在仓库内(`data/`,已 gitignore)。
+`--host` 接 IP 或主机名。用主机名先确认解析得通,而且要用真正能解析的那个形式 —— 同一台设备,裸主机名(走网络 DNS)和 `<主机名>.local`(走 mDNS)未必都行,`curl -s -m 3 http://<主机名>/status` 通了才用它。
+
+`~/.claude` 下只留两样东西:`settings.json` 里的 hook,和 Claude Code 强制要求的技能加载点 `skills/3dai-led/SKILL.md`。代码、运行时数据、设备地址全在仓库内(`data/`,已 gitignore)。
 
 ## 接 Claude Code 以外的工具
 

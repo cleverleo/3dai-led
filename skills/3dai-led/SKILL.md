@@ -19,10 +19,10 @@ ESP32 + WS2812 灯带(8 颗灯珠),通过局域网 HTTP 控制。让 AI 编码�
 ## 安装
 
 ```bash
-./install.sh                    # 接进 Claude Code
-./install.sh --host 10.0.0.42   # 顺便改设备地址
-./install.sh --dry-run          # 先看会改什么
-./uninstall.sh                  # 卸载(默认保留 leases.json / debug.log,加 --purge 一起删)
+./install.sh --host 192.168.1.42   # 首次安装:必须指定设备地址
+./install.sh                       # 重装:沿用 settings.json 里已有的地址
+./install.sh --dry-run             # 先看会改什么
+./uninstall.sh                     # 卸载(默认保留 leases.json / debug.log,加 --purge 一起删)
 ```
 
 `install.sh` 做四件事:清理旧版残留的脚本副本、建数据目录、装 `SKILL.md`、把 13 条 hook 写进 `~/.claude/settings.json`(写前自动备份成 `settings.json.bak-<时间戳>`,只动 3dai-led 自己的条目,同一事件下你挂的其他命令原样保留)。可以反复跑,不会累积重复项。
@@ -31,7 +31,7 @@ ESP32 + WS2812 灯带(8 颗灯珠),通过局域网 HTTP 控制。让 AI 编码�
 
 唯一的例外是 `SKILL.md`:Claude Code 只从 `~/.claude/skills/` 加载技能,那里放不下一个"指针",所以默认复制过去(纯文档,无路径依赖),改了它要重跑安装。想让它跟着仓库自动更新就用 `--skill link`,不装技能用 `--skill skip`。
 
-运行时数据(`leases.json`、`debug.log`)落在 `--data-dir`,默认就是仓库里的 `data/`(已 gitignore)。代码和数据都在仓库内,`~/.claude` 下只剩两样东西:`settings.json` 里的 hook,和上面那个技能加载点。换别的编码工具接入时,前者换成那个工具的配置即可,其余原样不动。
+运行时数据(`leases.json`、`debug.log`)和设备地址(`host`)都落在 `--data-dir`,默认就是仓库里的 `data/`(已 gitignore)。代码、数据、配置全在仓库内,`~/.claude` 下只剩两样东西:`settings.json` 里的 hook,和上面那个技能加载点 —— 连设备地址都不写进去。换别的编码工具接入时,把 hook 换成那个工具的配置即可,其余原样不动。
 
 从旧版(脚本和数据都在 `~/.claude/3dai-led`)升上来时,`install.sh` 会把 `leases.json`、`debug.log` 搬到新位置再删掉那个目录,槽位分配和排查记录不会断。
 
@@ -178,7 +178,7 @@ stdin 不是终端时脚本会尝试读取,但有 1 秒超时,调用方不喂数
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `LED_HOST` | `192.168.1.100` | 设备地址;这个默认值只是占位符,装的时候用 `--host` 指定自己的 |
+| `LED_HOST` | 见下 | 设备地址(IP 或主机名) |
 | `LED_DATA_DIR` | `<repo>/data` | 租约表和日志的目录;默认由脚本自身位置推出,不依赖 `~/.claude` |
 | `LED_SLOTS` | `8` | 灯珠总数 |
 | `LED_STALE_MIN` | `30` | `ts` 过期分钟数 |
@@ -186,6 +186,16 @@ stdin 不是终端时脚本会尝试读取,但有 1 秒超时,调用方不喂数
 | `LED_SESSION_ID` | — | 会话标识,见上 |
 | `LED_PYTHON` | — | 指定 python3 路径;默认取 `PATH` 里的,回退 `/usr/bin/python3` |
 | `LED_DEBUG` | `0` | 日志总开关。设为 `1` 时每次点灯往 `debug.log` 追加一行(含触发事件、工具名、curl 返回码);默认一个字节都不落盘 |
+
+设备地址按三级回退取:`LED_HOST` 环境变量 > `$LED_DATA_DIR/host`(`install.sh --host` 写的)> 占位符 `192.168.1.100`。中间那级是关键 —— 从 hook 调用时地址可以由工具的 env 注入,但你在终端里手动敲 `led.sh status` 排查问题时没有那个 env,少了它就会静默打向一个不存在的地址,灯不亮也不报错。改设备地址重跑 `./install.sh --host <新地址>` 即可,或直接改 `data/host` 这一行。
+
+用主机名要先确认解析得通,而且**要用真正能解析的那个形式**:
+
+```bash
+curl -s -m 3 http://<主机名>/status     # 通了才用它
+```
+
+同一台设备,裸主机名和 `<主机名>.local` 未必都行 —— 前者走网络里的 DNS(路由器把 DHCP 主机名注册进去),后者走 mDNS,两条路径互相独立。哪个通用哪个,别想当然加 `.local`。
 
 `LED_STALE_MIN` 是个权衡:调小能更快回收崩溃残留,但**空闲超过该时长的活跃会话也会被回收**(`ts` 只在有活动时刷新)。被回收后下次操作会自动重新抢占,功能不受损,但可能换到另一颗灯珠。
 
@@ -236,7 +246,6 @@ stdin 不是终端时脚本会尝试读取,但有 1 秒超时,调用方不喂数
 
 ```json
 {
-  "env": { "LED_HOST": "192.168.1.100" },
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "async": true,

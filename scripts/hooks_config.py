@@ -5,7 +5,7 @@ install.sh / uninstall.sh 共用。之所以不用 sed/jq 硬凑:settings.json �
 用户自己的 env、plugins、语言设置,必须整份读进来改完再写回去,不能整段覆盖。
 jq 不是系统自带的,而 python3 是 lease.py 的既有依赖,不额外引入运行时。
 
-    hooks_config.py install --settings P --led-sh P [--host H] [--data-dir D]
+    hooks_config.py install --settings P --led-sh P [--data-dir D]
     hooks_config.py remove  --settings P
     hooks_config.py show    --settings P
 
@@ -141,17 +141,25 @@ def build(settings, led_sh):
         groups.append(group)
 
 
-def set_env(settings, host, data_dir):
-    env = settings.setdefault("env", {})
-    if not isinstance(env, dict):
+def set_env(settings, data_dir):
+    env = settings.get("env")
+    if env is None:
+        env = {} if data_dir else None
+    elif not isinstance(env, dict):
         die("settings.json 的 env 不是对象,拒绝改写")
-    if host:
-        env["LED_HOST"] = host
-    if data_dir:
-        env["LED_DATA_DIR"] = data_dir
+
+    if env is not None:
+        # 设备地址现在存在数据目录的 host 文件里,由 led.sh 自己读 —— 留在这儿
+        # 反而会盖掉它,而且是两处配置源、迟早不一致。旧版装的要主动清掉。
+        env.pop("LED_HOST", None)
+        if data_dir:
+            env["LED_DATA_DIR"] = data_dir
+        else:
+            env.pop("LED_DATA_DIR", None)   # 回到默认值时别留下过期的指向
+
+    if env:
+        settings["env"] = env
     else:
-        env.pop("LED_DATA_DIR", None)   # 回到默认值时别留下过期的指向
-    if not env:
         settings.pop("env", None)
 
 
@@ -183,7 +191,6 @@ def main():
     ap.add_argument("action", choices=["install", "remove", "show"])
     ap.add_argument("--settings", required=True)
     ap.add_argument("--led-sh")
-    ap.add_argument("--host")
     ap.add_argument("--data-dir", help="非默认数据目录;留空则从 env 里移除该项")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -199,7 +206,7 @@ def main():
         if not args.led_sh:
             die("install 需要 --led-sh")
         build(settings, args.led_sh)
-        set_env(settings, args.host, args.data_dir)
+        set_env(settings, args.data_dir)
         summary = "替换 %d 条旧 hook,写入 %d 条" % (removed, len(HOOKS))
     else:
         summary = "移除 %d 条 hook" % removed

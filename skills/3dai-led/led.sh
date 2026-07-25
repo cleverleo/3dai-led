@@ -12,7 +12,6 @@
 
 set -u
 
-LED_HOST="${LED_HOST:-192.168.1.100}"
 NSLOTS="${LED_SLOTS:-8}"
 
 # 全部路径都从本脚本的真实位置推出来,不碰 ~/.claude —— 整套东西只在仓库里活动,
@@ -34,6 +33,12 @@ LEASE="$SELF_DIR/lease.py"
 
 LED_DATA_DIR="${LED_DATA_DIR:-$(cd "$SELF_DIR/../.." && pwd)/data}"
 export LED_DATA_DIR
+
+# 设备地址,三级回退:环境变量 > 数据目录里的 host 文件(install.sh 写的) > 占位符。
+# 中间那级是关键 —— 从 hook 调用时地址由工具的 env 注入,但你在终端里手动敲
+# `led.sh status` 排查问题时没有那个 env,少了它就会静默打向一个不存在的地址。
+LED_HOST="${LED_HOST:-$(cat "$LED_DATA_DIR/host" 2>/dev/null || true)}"
+LED_HOST="${LED_HOST:-192.168.1.100}"
 # hook 继承的 PATH 未必含 homebrew,回退到 CLT 自带的 python3
 PY="${LED_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
 

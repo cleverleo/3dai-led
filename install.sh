@@ -32,9 +32,9 @@ usage() {
   cat <<EOF
 用法: ./install.sh [选项]
 
-  --host <ip>            设备地址,写进 settings.json 的 env.LED_HOST
-                         (不给则保留现有值;从未配过时落占位符 192.168.1.100,
-                          那多半不是你的设备,首次安装建议显式指定)
+  --host <ip>            设备地址,写进 settings.json 的 env.LED_HOST。
+                         首次安装必填;之后重装可以省略,沿用 settings.json
+                         里已有的值(给了就覆盖)
   --skill copy|link|skip SKILL.md 的安装方式,默认 copy
   --skill-dst <path>     技能安装位置,默认 ~/.claude/skills/3dai-led
   --data-dir <path>      租约表和日志的目录,默认 <repo>/data
@@ -91,11 +91,49 @@ ok "python3: $PY ($("$PY" -V 2>&1))"
 [ -x "$LED_SH" ] || run "chmod +x '$LED_SH'"
 ok "led.sh 可执行"
 
+# 设备地址。首次安装必须显式给 —— 猜一个默认值只会装出一套指向不存在的设备、
+# 灯不亮也不报错的配置。已经配过的重装可以省略,沿用旧值。
+# 这一步必须赶在动任何文件之前:参数错了就该立刻退出,而不是复制完、迁移完才说。
+EXISTING_HOST=$(cat "$DATA_DIR/host" 2>/dev/null || true)
+HOST_SRC="$DATA_DIR/host"
+if [ -z "$EXISTING_HOST" ]; then
+  HOST_SRC="settings.json 的 env(旧版留下的)"
+  # 旧版把地址放在 settings.json 的 env 里,升级时捞回来,免得再问一次
+  EXISTING_HOST=$("$PY" - "$SETTINGS" <<'PYEOF' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        print((json.load(f).get("env") or {}).get("LED_HOST", ""))
+except Exception:
+    pass
+PYEOF
+)
+fi
+
+if [ -z "$HOST" ] && [ -z "$EXISTING_HOST" ]; then
+  bad "缺少 --host:首次安装必须指定设备地址"
+  echo "    例:./install.sh --host 192.168.1.42" >&2
+  echo "        ./install.sh --host 3dai-led-xxxxxxxx.local   # mDNS 主机名也行" >&2
+  echo "    浏览器打开 http://<地址>/ 能看到控制面板,就是对的" >&2
+  exit 2
+fi
+if [ -n "$HOST" ]; then
+  ok "设备地址: $HOST"
+else
+  ok "设备地址: $EXISTING_HOST(沿用 $HOST_SRC)"
+fi
+
 # ---------- 2. 数据目录 ----------
 step "准备数据目录"
 run "mkdir -p '$DATA_DIR'"
 okr "$DATA_DIR"
 [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] || ok "非默认路径,会写进 settings.json 的 env.LED_DATA_DIR"
+
+# 地址落在仓库里而不是只放进 hook 的 env:这样在终端手动跑 led.sh 排查时,
+# 它也知道该打向哪台设备。settings.json 那边因此不需要 LED_HOST。
+EFF_HOST="${HOST:-$EXISTING_HOST}"
+run "printf '%s\n' '$EFF_HOST' > '$DATA_DIR/host'"
+okr "设备地址写入 $DATA_DIR/host"
 
 # ---------- 3. 清理旧安装 ----------
 # 旧版把脚本和数据一起塞在 ~/.claude/3dai-led。脚本副本必须清掉 —— 留着的话,
@@ -167,30 +205,9 @@ esac
 # ---------- 5. hooks ----------
 step "写入 settings.json"
 
-# 已有的 LED_HOST:没给 --host 时沿用它,一次都没配过才落默认值
-EXISTING_HOST=$("$PY" - "$SETTINGS" <<'PYEOF' 2>/dev/null || true
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        print((json.load(f).get("env") or {}).get("LED_HOST", ""))
-except Exception:
-    pass
-PYEOF
-)
-
 CFG_ARGS=(install --settings "$SETTINGS" --led-sh "$LED_SH")
 [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] || CFG_ARGS+=(--data-dir "$DATA_DIR")
 [ -n "$DRY_RUN" ] && CFG_ARGS+=(--dry-run)
-
-if [ -n "$HOST" ]; then
-  CFG_ARGS+=(--host "$HOST")
-elif [ -z "$EXISTING_HOST" ]; then
-  HOST=192.168.1.100
-  CFG_ARGS+=(--host "$HOST")
-  warn "settings.json 里没有 LED_HOST,按默认值 $HOST 写入(可用 --host 改)"
-else
-  ok "沿用已有的 LED_HOST=$EXISTING_HOST"
-fi
 
 printf '  '
 "$PY" "$HOOKS_CFG" "${CFG_ARGS[@]}"
@@ -198,8 +215,6 @@ ok "hook 指向 $LED_SH"
 
 # ---------- 6. 自检 ----------
 step "自检"
-
-EFF_HOST="${HOST:-${EXISTING_HOST:-192.168.1.100}}"
 
 if curl -s -m 3 "http://${EFF_HOST}/status" >/dev/null 2>&1; then
   ok "设备可达: http://${EFF_HOST}/status"
