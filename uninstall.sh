@@ -10,8 +10,10 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SKILL_SRC="$REPO/skills/3dai-led"
 LED_SH="$SKILL_SRC/led.sh"
 HOOKS_CFG="$REPO/scripts/hooks_config.py"
+CODEX_HOOKS_CFG="$REPO/scripts/codex_hooks_config.py"
 
 SETTINGS="${HOME}/.claude/settings.json"
+CODEX_HOOKS="${CODEX_HOME:-${HOME}/.codex}/hooks.json"
 SKILL_DST="${HOME}/.claude/skills/3dai-led"
 DATA_DIR="${LED_DATA_DIR:-$REPO/data}"
 PURGE=""
@@ -27,6 +29,7 @@ usage() {
   --skill-dst <path> 技能安装位置,默认 ~/.claude/skills/3dai-led
   --data-dir <path>  数据目录,默认 <repo>/data
   --settings <path>  目标 settings.json,默认 ~/.claude/settings.json
+  --codex-hooks <path> 目标 Codex hooks.json,默认 ~/.codex/hooks.json
   --dry-run          只打印将要做的改动,不落盘
   -h, --help         显示本帮助
 EOF
@@ -39,6 +42,7 @@ while [ $# -gt 0 ]; do
     --skill-dst) SKILL_DST="${2:?--skill-dst 需要一个路径}"; shift 2 ;;
     --data-dir)  DATA_DIR="${2:?--data-dir 需要一个路径}"; shift 2 ;;
     --settings)  SETTINGS="${2:?--settings 需要一个路径}"; shift 2 ;;
+    --codex-hooks) CODEX_HOOKS="${2:?--codex-hooks 需要一个路径}"; shift 2 ;;
     --dry-run)   DRY_RUN=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -80,6 +84,16 @@ else
   warn "找不到 $SETTINGS 或 hooks_config.py,跳过"
 fi
 
+step "清理 Codex hooks.json"
+if [ -f "$CODEX_HOOKS" ] && [ -f "$CODEX_HOOKS_CFG" ]; then
+  CODEX_CFG_ARGS=(remove --hooks "$CODEX_HOOKS")
+  [ -n "$DRY_RUN" ] && CODEX_CFG_ARGS+=(--dry-run)
+  printf '  '
+  "$PY" "$CODEX_HOOKS_CFG" "${CODEX_CFG_ARGS[@]}"
+else
+  warn "找不到 $CODEX_HOOKS 或 codex_hooks_config.py,跳过"
+fi
+
 # ---------- 3. 技能 ----------
 step "移除技能"
 if [ -L "$SKILL_DST" ]; then
@@ -115,5 +129,5 @@ if [ -n "$DRY_RUN" ]; then
   echo "  [dry-run] 以上改动均未落盘"
 else
   echo "  仓库本身未改动:$REPO"
-  echo "  在 Claude Code 里打开一次 /hooks 菜单可触发配置重载。"
+  echo "  分别在 Claude Code / Codex 里打开一次 /hooks,重载配置。"
 fi

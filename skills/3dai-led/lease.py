@@ -2,10 +2,14 @@
 """3dai-led 槽位租约 —— 单个 JSON 文件,无锁。
 
     $LED_DATA_DIR/leases.json   (默认 <repo>/data/leases.json)
-    {"<cwd>": {"slot": 0, "ts": <epoch 秒>, "sids": ["<session_id>", ...]}}
+    {"<platform>:<cwd>": {"slot": 0, "ts": <epoch 秒>, "sids": ["<session_id>", ...]}}
 
-归属粒度是**工作目录**:同一目录的多个会话共享一颗灯珠,靠 sids 做引用计数,
-最后一个退出时才熄灯归还。ts 是该目录的最近活动时间,兼作心跳。
+归属粒度是**(平台, 工作目录)**:同一目录里 claude 和 codex 各抢一颗灯珠,状态互
+不覆盖;同一平台同一目录的多个会话才共享灯珠,靠 sids 做引用计数,最后一个退出时
+才熄灯归还。ts 是该租约的最近活动时间,兼作心跳。
+
+平台必须进 key 而不是只作为一个字段:两个工具在同一目录并行时,谁的 SessionEnd
+先到就会把另一个的灯一起熄掉,而单独一个 platform 字段也放不下两条并存的记录。
 
 ## 为什么不需要锁
 
@@ -47,6 +51,27 @@ NSLOTS = int(os.environ.get("LED_SLOTS", "8"))
 STALE = int(os.environ.get("LED_STALE_MIN", "30")) * 60
 THROTTLE = int(os.environ.get("LED_TS_THROTTLE", "60"))
 
+# 没报平台的调用方(手动敲 led.sh、没传第二个参数的脚本)统一归到这个名字下
+DEFAULT_PLATFORM = "cli"
+# 升级前的租约表 key 就是裸 cwd,那时只有 Claude Code 一个调用方
+LEGACY_PLATFORM = "claude"
+
+
+def make_key(platform, cwd):
+    """key = '<platform>:<cwd>'。cwd 一定以 / 开头,所以按第一个 : 切一定切得对。"""
+    return "%s:%s" % (platform, cwd)
+
+
+def split_key(key):
+    platform, _, cwd = key.partition(":")
+    return platform, cwd
+
+
+def norm_platform(name):
+    """: 是 key 的分隔符,平台名里不能有;空白和空值都退回默认名。"""
+    name = (name or "").strip().replace(":", "-")
+    return name or DEFAULT_PLATFORM
+
 
 def read_hook_json():
     """hook 会从 stdin 喂 JSON;不喂的调用方靠 1 秒超时兜底,不挂住。"""
@@ -76,9 +101,21 @@ def load():
     try:
         with open(LEASES) as f:
             got = json.load(f)
-        return got if isinstance(got, dict) else {}
     except Exception:
         return {}          # 不存在 / 读坏 -> 当空表,下次写入自动重建
+    return migrate(got) if isinstance(got, dict) else {}
+
+
+def migrate(table):
+    """把旧格式的裸 cwd key 就地改成 'claude:<cwd>'。
+
+    只在内存里转,下次走写路径时自然落盘。sids 里存的是 session_id,不受 key 变化
+    影响,所以升级时正在跑的会话不会掉租约、不会换灯珠。
+    """
+    for key in [k for k in table if k.startswith("/")]:
+        entry = table.pop(key)
+        table.setdefault(make_key(LEGACY_PLATFORM, key), entry)
+    return table
 
 
 def save(table):
@@ -101,20 +138,20 @@ def slot_of(entry):
 
 
 def sweep(table, now):
-    """删掉整体过期的目录条目,回收灯珠。返回需要熄灯的槽位号。"""
+    """删掉整体过期的租约,回收灯珠。返回需要熄灯的槽位号。"""
     off = []
-    for cwd in list(table):
-        entry = table[cwd]
+    for key in list(table):
+        entry = table[key]
         if not isinstance(entry, dict) or now - entry.get("ts", 0) > STALE:
             slot = slot_of(entry) if isinstance(entry, dict) else None
             if slot is not None:
                 off.append(slot)
-            del table[cwd]
+            del table[key]
     return off
 
 
 def normalize_single(table):
-    """只剩一个目录时把它归到 0 号灯珠,回需要熄灯的旧槽位。
+    """只剩一条租约时把它归到 0 号灯珠,回需要熄灯的旧槽位。
 
     单项目模式下设备会忽略 /set 的 led 参数,整条灯带统一表现全局状态(回读时
     落在 led_states[0])。所以单项目模式必须配 slot 0,否则切回多项目模式时
@@ -131,18 +168,22 @@ def normalize_single(table):
 
 
 def target_mode(table):
-    """0 = 单项目(整条灯带一个状态),1 = 多项目(每颗灯珠独立)。"""
+    """0 = 单项目(整条灯带一个状态),1 = 多项目(每颗灯珠独立)。
+
+    数的是租约条数而不是目录数:同一目录里 claude 和 codex 并行时是两颗灯,必须
+    切到多项目模式,否则两个状态会在整条灯带上互相覆盖。
+    """
     return 0 if len(table) <= 1 else 1
 
 
-def acquire(cwd, sid):
+def acquire(key, sid):
     """回 (灯珠号 or None, 需要熄灯的槽位号, 目标模式 or None)。
 
     满槽时灯珠号为 None,静默不点灯。目标模式为 None 表示走了快路径,不碰 /mode。
     """
     now = int(time.time())
     table = load()
-    entry = table.get(cwd)
+    entry = table.get(key)
 
     # 快路径:一个字节都不写,也不碰设备的 /mode
     if isinstance(entry, dict) and slot_of(entry) is not None \
@@ -151,7 +192,7 @@ def acquire(cwd, sid):
         return slot_of(entry), [], None
 
     off = sweep(table, now)
-    entry = table.get(cwd)         # sweep 可能把本目录也清掉了(空闲超 STALE)
+    entry = table.get(key)         # sweep 可能把本条也清掉了(空闲超 STALE)
 
     if isinstance(entry, dict) and slot_of(entry) is not None:
         entry["ts"] = now
@@ -169,7 +210,7 @@ def acquire(cwd, sid):
                 save(table)
             return None, off, None
         entry = {"slot": free[0], "ts": now, "sids": [sid]}
-        table[cwd] = entry
+        table[key] = entry
 
     off += normalize_single(table)
     save(table)
@@ -179,11 +220,11 @@ def acquire(cwd, sid):
     return slot_of(entry), off, target_mode(table)
 
 
-def release(cwd, sid, reason):
+def release(key, sid, reason):
     """回需要熄灯的槽位号。"""
     now = int(time.time())
     table = load()
-    entry = table.get(cwd)
+    entry = table.get(key)
     if not isinstance(entry, dict):
         return []
 
@@ -197,13 +238,13 @@ def release(cwd, sid, reason):
     sids = entry.get("sids", [])
     if sid in sids:
         sids.remove(sid)
-    if sids:                       # 同目录还有别的会话在跑 -> 不熄灯
+    if sids:                       # 同平台同目录还有别的会话在跑 -> 不熄灯
         entry["ts"] = now
         save(table)
         return []
 
     slot = slot_of(entry)
-    del table[cwd]
+    del table[key]
     save(table)
     return [slot] if slot is not None else []
 
@@ -212,15 +253,18 @@ def status():
     table = load()
     now = int(time.time())
     by_slot = {}
-    for cwd, entry in table.items():
+    for key, entry in table.items():
         if isinstance(entry, dict) and slot_of(entry) is not None:
-            by_slot[slot_of(entry)] = (cwd, entry)
+            by_slot[slot_of(entry)] = (key, entry)
+    width = max([len(split_key(k)[0]) for k in table] or [0])
     print("灯珠  归属")
     for n in range(NSLOTS):
         if n in by_slot:
-            cwd, entry = by_slot[n]
-            print("  %d   %s  (%d 个会话, %d 秒前活动)"
-                  % (n, cwd, len(entry.get("sids", [])), now - entry.get("ts", 0)))
+            key, entry = by_slot[n]
+            platform, cwd = split_key(key)
+            print("  %d   [%-*s] %s  (%d 个会话, %d 秒前活动)"
+                  % (n, width, platform, cwd,
+                     len(entry.get("sids", [])), now - entry.get("ts", 0)))
         else:
             print("  %d   —" % n)
 
@@ -236,14 +280,20 @@ def main():
     reason = hook.get("reason") or ""
     # 用 $PWD 而不是 getcwd():后者会解析符号链接,同一目录会算成两个归属
     cwd = os.environ.get("PWD") or os.getcwd()
+    # 平台由调用方自报:hook 命令里的第二个参数最可靠(一眼能在 settings.json 里
+    # 看到是谁挂的),脚本/插件这类不方便加参数的走 LED_PLATFORM。两者都没有时
+    # 归到 cli —— 手动敲 led.sh 排查时不会顶掉正在跑的会话的灯。
+    platform = norm_platform(
+        (sys.argv[2] if len(sys.argv) > 2 else "") or os.environ.get("LED_PLATFORM"))
+    key = make_key(platform, cwd)
 
     if cmd == "release":
         # release 不切模式。此刻切到单项目模式,整条灯带会去表现"最后一次 set"的值
-        # —— 也就是刚发出去的那个 off,剩下那个目录的灯会莫名熄灭。留给它下次点灯时
+        # —— 也就是刚发出去的那个 off,剩下那条租约的灯会莫名熄灭。留给它下次点灯时
         # 切:那时切模式和点亮状态在同一次调用里,不留空档。
-        slot, off, mode = None, release(cwd, sid, reason), None
+        slot, off, mode = None, release(key, sid, reason), None
     else:
-        slot, off, mode = acquire(cwd, sid)
+        slot, off, mode = acquire(key, sid)
 
     # 给 led.sh 的一行,字段用 \037 分隔 —— 不能用制表符:tab 属于 IFS 白空格,
     # bash 的 read 会把连续的 tab 合并成一个,空字段(slot 或 off 为空)会被吃掉,

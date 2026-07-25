@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 3dai-led 安装:把本仓库接进 Claude Code。
+# 3dai-led 安装:把本仓库接进 Claude Code 和 Codex。
 #
 # 采用"就地引用"—— hook 里写的是本仓库中 led.sh 的绝对路径,不复制、不做软链接。
 # 改了代码立刻生效,代价是仓库不能挪窝:移动或删除之后要重跑一次本脚本。
@@ -18,8 +18,12 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SKILL_SRC="$REPO/skills/3dai-led"
 LED_SH="$SKILL_SRC/led.sh"
 HOOKS_CFG="$REPO/scripts/hooks_config.py"
+CODEX_HOOKS_CFG="$REPO/scripts/codex_hooks_config.py"
+CODEX_HOOK_SOURCE="$REPO/config/codex-hooks.json"
+CODEX_ADAPTER="$REPO/scripts/codex_hook.py"
 
 SETTINGS="${HOME}/.claude/settings.json"
+CODEX_HOOKS="${CODEX_HOME:-${HOME}/.codex}/hooks.json"
 SKILL_DST="${HOME}/.claude/skills/3dai-led"
 DEFAULT_DATA_DIR="$REPO/data"
 DATA_DIR="$DEFAULT_DATA_DIR"
@@ -32,13 +36,13 @@ usage() {
   cat <<EOF
 用法: ./install.sh [选项]
 
-  --host <ip>            设备地址,写进 settings.json 的 env.LED_HOST。
-                         首次安装必填;之后重装可以省略,沿用 settings.json
-                         里已有的值(给了就覆盖)
+  --host <ip>            设备地址,写进数据目录的 host 文件。
+                         首次安装必填;之后重装可以省略,沿用已有值
   --skill copy|link|skip SKILL.md 的安装方式,默认 copy
   --skill-dst <path>     技能安装位置,默认 ~/.claude/skills/3dai-led
   --data-dir <path>      租约表和日志的目录,默认 <repo>/data
   --settings <path>      目标 settings.json,默认 ~/.claude/settings.json
+  --codex-hooks <path>   目标 Codex hooks.json,默认 ~/.codex/hooks.json
   --dry-run              只打印将要做的改动,不落盘
   -h, --help             显示本帮助
 
@@ -53,6 +57,7 @@ while [ $# -gt 0 ]; do
     --skill-dst) SKILL_DST="${2:?--skill-dst 需要一个路径}"; shift 2 ;;
     --data-dir)  DATA_DIR="${2:?--data-dir 需要一个路径}"; shift 2 ;;
     --settings)  SETTINGS="${2:?--settings 需要一个路径}"; shift 2 ;;
+    --codex-hooks) CODEX_HOOKS="${2:?--codex-hooks 需要一个路径}"; shift 2 ;;
     --dry-run)   DRY_RUN=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -75,7 +80,8 @@ okr()  { [ -n "$DRY_RUN" ] || ok "$@"; }
 # ---------- 1. 前置检查 ----------
 step "检查环境"
 
-for f in "$LED_SH" "$SKILL_SRC/lease.py" "$HOOKS_CFG"; do
+for f in "$LED_SH" "$SKILL_SRC/lease.py" "$HOOKS_CFG" \
+         "$CODEX_HOOKS_CFG" "$CODEX_HOOK_SOURCE" "$CODEX_ADAPTER"; do
   [ -f "$f" ] || { bad "缺少 ${f#$REPO/} —— 仓库不完整?"; exit 1; }
 done
 ok "仓库文件齐全($REPO)"
@@ -203,7 +209,7 @@ case "$SKILL_MODE" in
 esac
 
 # ---------- 5. hooks ----------
-step "写入 settings.json"
+step "写入 Claude Code settings.json"
 
 CFG_ARGS=(install --settings "$SETTINGS" --led-sh "$LED_SH")
 [ "$DATA_DIR" = "$DEFAULT_DATA_DIR" ] || CFG_ARGS+=(--data-dir "$DATA_DIR")
@@ -212,6 +218,16 @@ CFG_ARGS=(install --settings "$SETTINGS" --led-sh "$LED_SH")
 printf '  '
 "$PY" "$HOOKS_CFG" "${CFG_ARGS[@]}"
 ok "hook 指向 $LED_SH"
+
+step "写入 Codex hooks.json"
+
+CODEX_CFG_ARGS=(install --hooks "$CODEX_HOOKS" --source "$CODEX_HOOK_SOURCE" \
+  --python "$PY" --adapter "$CODEX_ADAPTER")
+[ -n "$DRY_RUN" ] && CODEX_CFG_ARGS+=(--dry-run)
+
+printf '  '
+"$PY" "$CODEX_HOOKS_CFG" "${CODEX_CFG_ARGS[@]}"
+ok "Codex hook 通过 $CODEX_ADAPTER 复用 $LED_SH"
 
 # ---------- 6. 自检 ----------
 step "自检"
@@ -235,7 +251,8 @@ cat <<EOF
   代码就地引用: $SKILL_SRC
   运行时数据:   $DATA_DIR
   配置:         $SETTINGS
+  Codex 配置:   $CODEX_HOOKS
 
   仓库移动或删除后灯会失效,届时重跑本脚本即可。
-  在 Claude Code 里打开一次 /hooks 菜单可触发配置重载。
+  分别在 Claude Code / Codex 里打开一次 /hooks,重载并信任 hook。
 EOF

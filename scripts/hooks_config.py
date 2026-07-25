@@ -40,6 +40,12 @@ HOOKS = [
     ("SessionEnd",         None,                     "release",  False),
 ]
 
+# 平台名,作为第二个参数跟在状态后面。租约按 (platform, cwd) 归属,所以同一目录里
+# 并行跑 Claude Code 和 codex 时两边各占一颗灯珠,不会互相覆盖状态、也不会被对方的
+# SessionEnd 连带熄灯。写成 hook 命令的参数而不是 settings.json 的 env:一眼就能在
+# 配置里看出这条 hook 是谁挂的,换工具接入时也不用记得改另一处。
+PLATFORM = "claude"
+
 # 判定一条 hook 是不是我们的:认「led.sh + 一个合法状态词」这个形状,不认具体路径。
 # 旧版装在 ~/.claude/3dai-led/led.sh、软链接、另一个仓库副本,都能被认出来,重装
 # 才真正幂等。反过来也不能只认路径里的 "3dai-led" —— 仓库目录本身就叫这个名字,
@@ -127,7 +133,8 @@ def build(settings, led_sh):
     """把 HOOKS 表写进 settings,追加在各事件已有条目的后面。"""
     hooks = settings.setdefault("hooks", {})
     for event, matcher, state, is_async in HOOKS:
-        entry = {"type": "command", "command": '"%s" %s' % (led_sh, state)}
+        entry = {"type": "command",
+                 "command": '"%s" %s %s' % (led_sh, state, PLATFORM)}
         if is_async:
             entry["async"] = True
         else:

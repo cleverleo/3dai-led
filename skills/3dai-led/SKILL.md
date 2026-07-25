@@ -10,7 +10,7 @@ ESP32 + WS2812 灯带(8 颗灯珠),通过局域网 HTTP 控制。让 AI 编码�
 两层结构,都与具体工具无关:
 
 - **HTTP API** — 设备本身的接口,任何能发 HTTP 请求的东西都能驱动它
-- **`led.sh`**(+ 同目录的 `lease.py`)— 槽位租约脚本,解决多个工作目录 / 多个会话并行时争抢灯珠的问题
+- **`led.sh`**(+ 同目录的 `lease.py`)— 槽位租约脚本,解决多个工具 / 多个工作目录 / 多个会话并行时争抢灯珠的问题
 
 接入方式取决于你用的工具能不能在生命周期事件上执行命令。下面给了 Claude Code 的完整配置作为示例,其他工具同理。
 
@@ -98,30 +98,45 @@ curl -s "$DEV/idle_timeout?t=0"          # 关闭闲置待机
 
 ## Shell:槽位租约
 
-直接写死灯珠索引的话,多个工作目录(git worktree、不同项目)或多个会话并行时会互相覆盖,灯反映的是最后一个发消息的那个,失去参考价值。
+直接写死灯珠索引的话,多个工作目录(git worktree、不同项目)、多个会话、或同一目录里并行的多个工具会互相覆盖,灯反映的是最后一个发消息的那个,失去参考价值。
 
-`skills/3dai-led/led.sh` 用租约机制解决:**按工作目录动态抢占一颗空闲灯珠,会话结束归还**。脚本靠自身路径找同目录的 `lease.py`,所以放哪、怎么调用(绝对路径、软链接、加进 `PATH`)都行。
+`skills/3dai-led/led.sh` 用租约机制解决:**按 (平台, 工作目录) 动态抢占一颗空闲灯珠,会话结束归还**。脚本靠自身路径找同目录的 `lease.py`,所以放哪、怎么调用(绝对路径、软链接、加进 `PATH`)都行。
 
 ### 命令
 
 ```bash
-led.sh <state>   # 抢占或复用当前目录的槽位并点灯
-led.sh release   # 归还租约;该目录已无会话时熄灯并释放槽位
-led.sh status    # 查看槽位分配表
-led.sh reset     # 清空全部租约并熄灭所有灯珠
+led.sh <state> [platform]   # 抢占或复用当前 (平台, 目录) 的槽位并点灯
+led.sh release [platform]   # 归还租约;该 (平台, 目录) 已无会话时熄灯并释放槽位
+led.sh status               # 查看槽位分配表
+led.sh reset                # 清空全部租约并熄灭所有灯珠
 ```
 
 ```
 $ led.sh status
 灯珠  归属
-  0   /Users/me/work/project-a          (2 个会话)
-  1   /Users/me/work/project-b          (1 个会话)
-  2   —
+  0   [claude] /Users/me/work/project-a  (2 个会话, 3 秒前活动)
+  1   [codex ] /Users/me/work/project-a  (1 个会话, 41 秒前活动)
+  2   [claude] /Users/me/work/project-b  (1 个会话, 12 秒前活动)
+  3   —
 ```
+
+### 平台:同一目录里并行的不同工具
+
+同一个目录同时开着 Claude Code 和 codex 是常态。如果归属只按目录算,两边会共用一颗灯珠、状态互相覆盖,而且谁先结束会话就把对方的灯一起熄了。
+
+所以归属粒度是 **(平台, 工作目录)**:两个工具各抢一颗灯珠,`release` 只影响自己那条租约。平台名按以下优先级取:
+
+1. **第二个位置参数** — `led.sh coding codex`。hook 配置里推荐用这种,一眼能看出这条 hook 是谁挂的
+2. **`LED_PLATFORM` 环境变量** — 不方便加参数的调用方用这个
+3. 都没有则归到 `cli`,和任何带平台名的租约互不干扰(所以在终端手动敲 `led.sh thinking` 排查时,不会顶掉正在跑的会话的灯)
+
+平台名是自由字符串,只有一条限制:`:` 是租约表 key 的分隔符,出现时会被替换成 `-`。
+
+从旧版升级时,租约表里裸目录名的 key 会被自动认作 `claude` 的租约,正在跑的会话不掉租约、不换灯珠。
 
 ### 会话标识的两种来源
 
-引用计数需要区分同一目录下的不同会话,脚本按以下优先级取标识:
+引用计数需要区分同一平台、同一目录下的不同会话,脚本按以下优先级取标识:
 
 1. **stdin 的 JSON** — 读 `session_id` 字段(工具以 hook 形式喂入时用这个)
 2. **`LED_SESSION_ID` 环境变量** — 不走 stdin 的调用方用这个
@@ -144,10 +159,10 @@ stdin 不是终端时脚本会尝试读取,但有 1 秒超时,调用方不喂数
 
 ```json
 // $LED_DATA_DIR/leases.json,默认 <repo>/data/leases.json
-{"/Users/me/work/project-a": {"slot": 0, "ts": 1784962322, "sids": ["<session_id>"]}}
+{"claude:/Users/me/work/project-a": {"slot": 0, "ts": 1784962322, "sids": ["<session_id>"]}}
 ```
 
-- **归属按工作目录** — 同一目录的多个会话共享一颗灯珠,靠 `sids` 做引用计数,**最后一个**退出时才熄灯并归还
+- **归属按 (平台, 工作目录)** — 同一平台同一目录的多个会话共享一颗灯珠,靠 `sids` 做引用计数,**最后一个**退出时才熄灯并归还;不同平台是两条独立租约
 - **没有锁,稳定态只读** — cwd 已持有灯珠、会话已登记、`ts` 距今不到 `LED_TS_THROTTLE` 秒时,直接用记录里的灯珠号,一个字节都不写。一轮对话十几次 hook,只有第一次会写文件
 - **写入原子** — 先写同目录临时文件再 `os.replace()`,读者要么看到旧的完整 JSON、要么看到新的,绝不会读到半截。两个进程恰好撞进同一个读-改-写窗口时,后写的会覆盖前者:最坏是两个目录映射到同一颗灯(状态互相覆盖),或某个条目丢失(下次点灯重新抢占,自愈)。对一个状态指示灯来说,这比维护一把锁划算 —— 锁会把 `curl` 的 2 秒超时算进持锁时间,设备离线时反过来让其他目录的灯集体不亮
 - **过期回收** — 崩溃或 `kill -9` 时清理逻辑跑不到,租约会残留。`ts` 超过 `LED_STALE_MIN` 未更新即视为泄漏,由下一次走写路径的调用顺手回收并熄灯
@@ -155,12 +170,14 @@ stdin 不是终端时脚本会尝试读取,但有 1 秒超时,调用方不喂数
 
 ### 单 / 多项目模式自动切换
 
-灯珠模式跟着**持有租约的目录数**自动走,不需要手动切:
+灯珠模式跟着**租约条数**自动走,不需要手动切:
 
-| 目录数 | 模式 | 效果 |
+| 租约数 | 模式 | 效果 |
 |--------|------|------|
 | ≤ 1 | `m=0` 单项目 | 整条灯带一起表现这一个状态,视觉上比只亮一颗醒目得多 |
-| ≥ 2 | `m=1` 多项目 | 8 颗灯珠各自独立,一颗对一个目录 |
+| ≥ 2 | `m=1` 多项目 | 8 颗灯珠各自独立,一颗对一条租约 |
+
+数的是租约条数而不是目录数 —— 同一目录里 claude 和 codex 并行也是两颗灯,同样要切到多项目模式。
 
 三个实现要点:
 
@@ -183,6 +200,7 @@ stdin 不是终端时脚本会尝试读取,但有 1 秒超时,调用方不喂数
 | `LED_SLOTS` | `8` | 灯珠总数 |
 | `LED_STALE_MIN` | `30` | `ts` 过期分钟数 |
 | `LED_TS_THROTTLE` | `60` | 刷新 `ts` 的最小间隔秒数,期间只读不写 |
+| `LED_PLATFORM` | `cli` | 平台名,见上;第二个位置参数优先于它 |
 | `LED_SESSION_ID` | — | 会话标识,见上 |
 | `LED_PYTHON` | — | 指定 python3 路径;默认取 `PATH` 里的,回退 `/usr/bin/python3` |
 | `LED_DEBUG` | `0` | 日志总开关。设为 `1` 时每次点灯往 `debug.log` 追加一行(含触发事件、工具名、curl 返回码);默认一个字节都不落盘 |
@@ -205,7 +223,7 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 
 ## 接入编码工具
 
-通用做法:在工具的生命周期事件上执行 `led.sh <state>`,并在会话结束时执行 `led.sh release`。只要能挂命令,就能接。
+通用做法:在工具的生命周期事件上执行 `led.sh <state> <platform>`,并在会话结束时执行 `led.sh release <platform>`。只要能挂命令,就能接。平台名随便起,同一个工具的所有 hook 用同一个即可 —— 它决定了这个工具在每个目录里独占一颗灯珠。
 
 事件到灯效的映射建议:
 
@@ -227,7 +245,7 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 
 ### 示例:Claude Code
 
-配置在 `~/.claude/settings.json`,全局生效(所有项目共用这 8 颗灯珠)。**这份配置由 `./install.sh` 自动写入**,下面列出来是为了说明它长什么样、以及为什么这么挂 —— 手改也行,但重跑安装会以这张表为准覆盖回去。Claude Code 会把含 `session_id` 的 JSON 从 stdin 喂给 hook,所以无需设 `LED_SESSION_ID`。
+配置在 `~/.claude/settings.json`,全局生效(所有项目共用这 8 颗灯珠)。**这份配置由 `./install.sh` 自动写入**,下面列出来是为了说明它长什么样、以及为什么这么挂 —— 手改也行,但重跑安装会以这张表为准覆盖回去。Claude Code 会把含 `session_id` 的 JSON 从 stdin 喂给 hook,所以无需设 `LED_SESSION_ID`;平台名 `claude` 作为第二个参数写死在每条命令里。
 
 | 事件 | matcher | → 状态 |
 |------|---------|--------|
@@ -249,15 +267,15 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "async": true,
-                     "command": "\"/path/to/repo/skills/3dai-led/led.sh\" thinking" } ] }
+                     "command": "\"/path/to/repo/skills/3dai-led/led.sh\" thinking claude" } ] }
     ],
     "PreToolUse": [
       { "matcher": "Bash", "hooks": [ { "type": "command", "async": true,
-                     "command": "\"/path/to/repo/skills/3dai-led/led.sh\" busy" } ] }
+                     "command": "\"/path/to/repo/skills/3dai-led/led.sh\" busy claude" } ] }
     ],
     "SessionEnd": [
       { "hooks": [ { "type": "command", "timeout": 8,
-                     "command": "\"/path/to/repo/skills/3dai-led/led.sh\" release" } ] }
+                     "command": "\"/path/to/repo/skills/3dai-led/led.sh\" release claude" } ] }
     ]
   }
 }
@@ -298,12 +316,15 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 
 ```bash
 export LED_SESSION_ID=$$
+export LED_PLATFORM=build      # 不写就归到 cli,和其他 cli 调用共用一颗灯珠
 trap 'led.sh release' EXIT     # 退出时归还,含异常退出
 
 led.sh busy
 ./long-running-build.sh || led.sh error
 led.sh success
 ```
+
+两个环境变量都可以换成位置参数(`led.sh busy build`),环境变量的好处是 `trap` 那行不用重复写平台名。
 
 ---
 
@@ -338,13 +359,14 @@ LED_PYTHON=/usr/bin/python3 led.sh status
 **灯亮着但状态不对** — 先设 `LED_DEBUG=1` 跑一轮,看 `$LED_DATA_DIR/debug.log`(默认 `<repo>/data/debug.log`)里最后落地的是哪个 `event=`:
 
 ```
-2026-07-25 15:13:01	led=all	s=single  	event=PostToolUse	tool=Bash	rc=0
-2026-07-25 15:13:01	led=0 	s=thinking	event=PostToolUse	tool=Bash	rc=0
-2026-07-25 15:13:05	led=0 	s=busy    	event=PreToolUse	tool=Bash	rc=0
-2026-07-25 15:14:20	led=—	s=—     	event=SessionEnd	tool=—	rc=—	reason=clear	cwd=/Users/me/work/project-a
+2026-07-25 15:13:01	led=all	s=single  	plat=claude	event=PostToolUse	tool=Bash	rc=0
+2026-07-25 15:13:01	led=0 	s=thinking	plat=claude	event=PostToolUse	tool=Bash	rc=0
+2026-07-25 15:13:05	led=1 	s=busy    	plat=codex 	event=PreToolUse	tool=Bash	rc=0
+2026-07-25 15:14:20	led=—	s=—     	plat=claude	event=SessionEnd	tool=—	rc=—	reason=clear	cwd=/Users/me/work/project-a
 ```
 
 - `led=all` 是 `/mode` 请求,`s=single` / `s=multi` 对应 `m=0` / `m=1`
+- `plat=` 是调用方自报的平台名 —— 同一目录里两个工具并行时,靠它分辨每一行是谁发的
 - `led=— s=— rc=—` 是占位行,表示这次一个 HTTP 请求都没发 —— `reason=clear` 保住租约、满槽降级、以及"同目录还有别的会话在跑"都是这个形状
 - 连续两行只有一行带 `led=all`,说明后面那次走了快路径(既没写 `leases.json`,也没碰 `/mode`)
 

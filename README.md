@@ -19,9 +19,9 @@ off        全灭              待机
 
 ## 它解决的问题
 
-一颗灯很好点。麻烦的是**多个工作目录、多个会话同时在跑**:直接写死灯珠索引的话,灯反映的永远是最后一个发消息的那个,失去参考价值。
+一颗灯很好点。麻烦的是**多个工作目录、多个会话、多个工具同时在跑**:直接写死灯珠索引的话,灯反映的永远是最后一个发消息的那个,失去参考价值。
 
-所以 8 颗灯珠按**工作目录**动态分配:每个目录抢占一颗,同目录的多个会话共享同一颗并做引用计数,最后一个退出时才熄灯归还。只有一个目录在跑时自动切成整条灯带表现同一个状态(比只亮一颗醒目得多),第二个目录进来时自动切回独立模式。
+所以 8 颗灯珠按 **(平台, 工作目录)** 动态分配:每个组合抢占一颗,同一组合下的多个会话共享同一颗并做引用计数,最后一个退出时才熄灯归还。平台名让同一个目录里并行的 Claude Code 和 codex 各占一颗灯,状态不互相覆盖,一方结束也不会顺手熄掉另一方的灯。只有一条租约在跑时自动切成整条灯带表现同一个状态(比只亮一颗醒目得多),第二条进来时自动切回独立模式。
 
 租约表是一个无锁 JSON:稳定态纯读不写(一轮对话十几次 hook,只有第一次落盘),写入靠 `os.replace()` 原子替换,崩溃残留的租约由超时回收。取舍的完整推导写在 [`skills/3dai-led/lease.py`](skills/3dai-led/lease.py) 顶部。
 
@@ -40,11 +40,11 @@ cd 3dai-led
 ./install.sh --host <你的设备IP>
 ```
 
-装完在 Claude Code 里打开一次 `/hooks` 菜单触发重载,然后随便说句话 —— 灯应该开始转彩虹。
+装完分别在 Claude Code 和 Codex 里打开一次 `/hooks`,重载并信任 hook,然后随便说句话 —— 灯应该开始转彩虹。
 
 `--host` 首次安装必填 —— 猜一个默认值只会装出一套指向不存在设备、灯不亮也不报错的配置。之后重装可以省略,沿用 `settings.json` 里已有的地址。
 
-`install.sh` 会把 13 条 hook 写进 `~/.claude/settings.json`(写前自动备份,只动本项目自己的条目,你挂的其他命令原样保留),可以反复跑,不累积重复项。`./uninstall.sh` 卸载。两个脚本都支持 `--dry-run`。
+`install.sh` 会把 Claude 的 13 条 hook 写进 `~/.claude/settings.json`,并把 Codex hooks 写进 `~/.codex/hooks.json`。两边写前都会自动备份,只动本项目自己的条目,用户已有命令原样保留;可以反复运行,不会累积重复项。`./uninstall.sh` 会同时卸载两边配置。两个脚本都支持 `--dry-run`。
 
 **代码是就地引用的** —— hook 里写的是本仓库中 `led.sh` 的绝对路径,不复制、不做软链接。改了代码立刻生效,代价是仓库不能挪窝:移动之后重跑一次 `./install.sh`。
 
@@ -57,16 +57,17 @@ cd 3dai-led
 核心是两个与工具无关的层:HTTP API,和 `led.sh` 这个槽位租约脚本。只要你的工具能在生命周期事件上执行命令,就能接:
 
 ```bash
-led.sh <state>   # 抢占或复用当前目录的槽位并点灯
-led.sh release   # 归还租约;该目录已无会话时熄灯并释放槽位
-led.sh status    # 查看槽位分配表
-led.sh reset     # 清空全部租约并熄灭所有灯珠
+led.sh <state> [platform]   # 抢占或复用当前 (平台, 目录) 的槽位并点灯
+led.sh release [platform]   # 归还租约;该 (平台, 目录) 已无会话时熄灯并释放槽位
+led.sh status               # 查看槽位分配表
+led.sh reset                # 清空全部租约并熄灭所有灯珠
 ```
 
-会话标识从 stdin 的 JSON(`session_id` 字段)或 `LED_SESSION_ID` 环境变量取,两种都不给就退化成同目录一个会话。没有 hook 机制的场景直接用:
+平台名从第二个参数或 `LED_PLATFORM` 环境变量取,不给则归到 `cli`。会话标识从 stdin 的 JSON(`session_id` 字段)或 `LED_SESSION_ID` 环境变量取,两种都不给就退化成同一租约下一个会话。没有 hook 机制的场景直接用:
 
 ```bash
 export LED_SESSION_ID=$$
+export LED_PLATFORM=build
 trap 'led.sh release' EXIT
 
 led.sh busy
@@ -96,6 +97,9 @@ curl -s "$DEV/idle_timeout?t=0"          # 关闭闲置待机
 install.sh                     安装:写 hook、装技能、迁移旧数据、自检
 uninstall.sh                   卸载:熄灯、摘 hook、移除技能
 scripts/hooks_config.py        settings.json 的 hook 读写(两个脚本共用)
+scripts/codex_hooks_config.py  Codex hooks.json 的幂等安装/卸载
+scripts/codex_hook.py          Codex stdin/异步适配,最终调用 led.sh
+config/codex-hooks.json        Codex 生命周期事件模板(安装后写入用户配置)
 skills/3dai-led/
   SKILL.md                     完整文档,也是给 Claude Code 读的技能说明
   led.sh                       槽位租约 + HTTP

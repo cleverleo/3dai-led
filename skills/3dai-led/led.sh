@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # 3dai-led 槽位租约管理
 #
-#   led.sh <state>   按 cwd 抢占/复用灯珠并点灯
-#   led.sh release   归还租约;该 cwd 再无会话时熄灯
-#   led.sh status    打印槽位表(调试用)
-#   led.sh reset     清空全部租约并熄灭所有灯珠(调试用)
+#   led.sh <state> [platform]   按 (platform, cwd) 抢占/复用灯珠并点灯
+#   led.sh release [platform]   归还租约;该 (platform, cwd) 再无会话时熄灯
+#   led.sh status               打印槽位表(调试用)
+#   led.sh reset                清空全部租约并熄灭所有灯珠(调试用)
+#
+# platform 区分同一目录下并行的不同工具(claude / codex / ...),让它们各占一颗灯珠
+# 而不是互相覆盖状态。省略时取 $LED_PLATFORM,再没有就归到 cli。
 #
 # 租约存在单个 JSON(leases.json)里,由 lease.py 读写,没有锁 —— 稳定态只读、
 # 写入靠 os.replace 原子替换,取舍见 lease.py 顶部注释。
@@ -45,6 +48,7 @@ PY="${LED_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
 HOOK_EVENT=""
 HOOK_TOOL=""
 HOOK_REASON=""
+PLATFORM="${2:-${LED_PLATFORM:-cli}}"   # 只用于日志;归属判定以 lease.py 的结果为准
 
 # 唯一的日志出口,LED_DEBUG=1 才落盘;平时一个字节都不写。
 # reason 只有 SessionEnd 会带,那行顺带记 cwd —— 多目录并行时才分得清是谁结束了。
@@ -53,8 +57,9 @@ logline() { # <led> <state> <rc>
   [ -d "$LED_DATA_DIR" ] || mkdir -p "$LED_DATA_DIR" 2>/dev/null
   local extra=""
   [ -n "${HOOK_REASON:-}" ] && extra=$(printf '\treason=%s\tcwd=%s' "$HOOK_REASON" "$PWD")
-  printf '%s\tled=%-2s\ts=%-8s\tevent=%-18s\ttool=%-10s\trc=%s%s\n' \
-    "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" "${HOOK_EVENT:-—}" "${HOOK_TOOL:-—}" "$3" "$extra" \
+  printf '%s\tled=%-2s\ts=%-8s\tplat=%-6s\tevent=%-18s\ttool=%-10s\trc=%s%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" "$PLATFORM" \
+    "${HOOK_EVENT:-—}" "${HOOK_TOOL:-—}" "$3" "$extra" \
     >> "$LED_DATA_DIR/debug.log" 2>/dev/null
   return 0
 }
@@ -93,7 +98,7 @@ case "${1:-}" in
     ;;
 
   "")
-    echo "用法: led.sh <state|release|status|reset>" >&2
+    echo "用法: led.sh <state|release> [platform] | led.sh <status|reset>" >&2
     exit 2
     ;;
 
@@ -102,7 +107,7 @@ case "${1:-}" in
     # release 走同一条路,只是回来的 slot 为空。
     # 分隔符是 \037 而不是制表符:tab 属于 IFS 白空格,read 会合并连续的 tab,
     # slot 或 off 为空时字段会整体左移(曾导致 release 发出 s=release 而不熄灯)。
-    out=$("$PY" "$LEASE" "$1" 2>/dev/null) || exit 0
+    out=$("$PY" "$LEASE" "$1" "$PLATFORM" 2>/dev/null) || exit 0
     IFS=$'\037' read -r slot offs HOOK_EVENT HOOK_TOOL HOOK_REASON mode <<< "$out"
     # 三步的顺序是有讲究的:
     #   1. 先熄灯 —— 此时还没切模式,led 参数才有效,不会打到全局
