@@ -12,7 +12,7 @@
 
 set -u
 
-LED_HOST="${LED_HOST:-192.168.65.76}"
+LED_HOST="${LED_HOST:-192.168.1.100}"
 NSLOTS="${LED_SLOTS:-8}"
 
 # 全部路径都从本脚本的真实位置推出来,不碰 ~/.claude —— 整套东西只在仓库里活动,

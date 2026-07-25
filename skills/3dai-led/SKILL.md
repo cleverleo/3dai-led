@@ -71,7 +71,7 @@ ESP32 + WS2812 灯带(8 颗灯珠),通过局域网 HTTP 控制。让 AI 编码�
 ### 常用命令
 
 ```bash
-DEV=http://192.168.65.76
+DEV=http://192.168.1.100                 # 换成你的设备地址
 
 curl -s $DEV/status                      # 查设备状态
 curl -s "$DEV/set?led=0&s=coding"        # 0 号灯珠设为 coding
@@ -85,7 +85,7 @@ curl -s "$DEV/idle_timeout?t=0"          # 关闭闲置待机
 `/status` 返回的 `led_states` 是长度为 8 的数组,即每颗灯珠的当前状态:
 
 ```json
-{"state":"coding","brightness":128,"ip":"192.168.65.76","multi_led":true,
+{"state":"coding","brightness":128,"ip":"192.168.1.100","multi_led":true,
  "idle_timeout":1800,"led_states":["coding","off","off","off","off","off","off","off"],
  "states":["thinking","coding","busy","waiting","success","error","alarm","off"]}
 ```
@@ -178,7 +178,7 @@ stdin 不是终端时脚本会尝试读取,但有 1 秒超时,调用方不喂数
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `LED_HOST` | `192.168.65.76` | 设备地址 |
+| `LED_HOST` | `192.168.1.100` | 设备地址;这个默认值只是占位符,装的时候用 `--host` 指定自己的 |
 | `LED_DATA_DIR` | `<repo>/data` | 租约表和日志的目录;默认由脚本自身位置推出,不依赖 `~/.claude` |
 | `LED_SLOTS` | `8` | 灯珠总数 |
 | `LED_STALE_MIN` | `30` | `ts` 过期分钟数 |
@@ -236,7 +236,7 @@ stdin 不是终端时脚本会尝试读取,但有 1 秒超时,调用方不喂数
 
 ```json
 {
-  "env": { "LED_HOST": "192.168.65.76" },
+  "env": { "LED_HOST": "192.168.1.100" },
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "async": true,
@@ -303,7 +303,7 @@ led.sh success
 **灯完全不亮**
 
 ```bash
-curl -s -m 3 http://192.168.65.76/status    # 1. 设备是否可达
+curl -s -m 3 http://192.168.1.100/status    # 1. 设备是否可达
 led.sh status                               # 2. 当前目录是否拿到槽位
 ```
 

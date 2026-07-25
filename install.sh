@@ -33,7 +33,8 @@ usage() {
 用法: ./install.sh [选项]
 
   --host <ip>            设备地址,写进 settings.json 的 env.LED_HOST
-                         (不给则保留现有值;从未配过时用脚本默认的 192.168.65.76)
+                         (不给则保留现有值;从未配过时落占位符 192.168.1.100,
+                          那多半不是你的设备,首次安装建议显式指定)
   --skill copy|link|skip SKILL.md 的安装方式,默认 copy
   --skill-dst <path>     技能安装位置,默认 ~/.claude/skills/3dai-led
   --data-dir <path>      租约表和日志的目录,默认 <repo>/data
@@ -184,7 +185,7 @@ CFG_ARGS=(install --settings "$SETTINGS" --led-sh "$LED_SH")
 if [ -n "$HOST" ]; then
   CFG_ARGS+=(--host "$HOST")
 elif [ -z "$EXISTING_HOST" ]; then
-  HOST=192.168.65.76
+  HOST=192.168.1.100
   CFG_ARGS+=(--host "$HOST")
   warn "settings.json 里没有 LED_HOST,按默认值 $HOST 写入(可用 --host 改)"
 else
@@ -198,7 +199,7 @@ ok "hook 指向 $LED_SH"
 # ---------- 6. 自检 ----------
 step "自检"
 
-EFF_HOST="${HOST:-${EXISTING_HOST:-192.168.65.76}}"
+EFF_HOST="${HOST:-${EXISTING_HOST:-192.168.1.100}}"
 
 if curl -s -m 3 "http://${EFF_HOST}/status" >/dev/null 2>&1; then
   ok "设备可达: http://${EFF_HOST}/status"

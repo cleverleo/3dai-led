@@ -73,7 +73,7 @@ led.sh success
 ## 直接用 HTTP
 
 ```bash
-DEV=http://192.168.65.76
+DEV=http://192.168.1.100                 # 换成你的设备地址
 
 curl -s $DEV/status                      # JSON 设备状态
 curl -s "$DEV/set?led=0&s=coding"        # 0 号灯珠设为 coding
