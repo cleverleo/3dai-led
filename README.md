@@ -44,7 +44,7 @@ cd 3dai-led
 
 `--host` 首次安装必填 —— 猜一个默认值只会装出一套指向不存在设备、灯不亮也不报错的配置。之后重装可以省略,沿用 `settings.json` 里已有的地址。
 
-`install.sh` 会把 Claude 的 13 条 hook 写进 `~/.claude/settings.json`,并把 Codex hooks 写进 `~/.codex/hooks.json`。两边写前都会自动备份,只动本项目自己的条目,用户已有命令原样保留;可以反复运行,不会累积重复项。`./uninstall.sh` 会同时卸载两边配置。两个脚本都支持 `--dry-run`。
+`install.sh` 会把 Claude 的 12 条 hook 写进 `~/.claude/settings.json`,并把 Codex hooks 写进 `~/.codex/hooks.json`。两边写前都会自动备份,只动本项目自己的条目,用户已有命令原样保留;可以反复运行,不会累积重复项。`./uninstall.sh` 会同时卸载两边配置。两个脚本都支持 `--dry-run`。
 
 **代码是就地引用的** —— hook 里写的是本仓库中 `led.sh` 的绝对路径,不复制、不做软链接。改了代码立刻生效,代价是仓库不能挪窝:移动之后重跑一次 `./install.sh`。
 

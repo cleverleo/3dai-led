@@ -252,7 +252,6 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 | UserPromptSubmit | — | thinking |
 | PreToolUse | `Edit\|Write\|NotebookEdit` | coding |
 | PreToolUse | `Bash` | busy |
-| PostToolUse | — | thinking |
 | PostToolUseFailure | — | error |
 | PermissionRequest / Notification | — | waiting |
 | SubagentStart | — | thinking |
@@ -287,7 +286,22 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 
 **只能配一处** — 全局和项目级同时配会双重触发,异步的时序不确定会导致熄灯被后到的请求覆盖。
 
-**不要给 `SubagentStop` 挂灯效** — 实测它在每轮结束时都会触发,即使这一轮压根没启动过 subagent,而且**排在 `Stop` 之后约 1 秒**。给它挂 `thinking` 会把 `Stop` 刚点亮的 `success` 盖掉,表现为「一轮结束后灯还在转彩虹,从来不变绿」。subagent 跑完本来就有 `PostToolUse` 兜底,这个 hook 属于纯多余。
+**不要给 `SubagentStop` 挂灯效** — 实测它在每轮结束时都会触发,即使这一轮压根没启动过 subagent,而且**排在 `Stop` 之后约 1 秒**。给它挂 `thinking` 会把 `Stop` 刚点亮的 `success` 盖掉,表现为「一轮结束后灯还在转彩虹,从来不变绿」。subagent 结束不需要单独的灯效,下一个 `PreToolUse` 或 `Stop` 自然会接上。
+
+**也不要给 `PostToolUse` 挂 `thinking`** — 曾经挂过,是「`coding` 根本看不见」的根因。它每个工具调用都触发一次,而 `Edit` 通常只花一两秒:
+
+```
+15:11:19	s=coding  	PreToolUse 	Edit
+15:11:21	s=thinking	PostToolUse	Edit    ← 2 秒后就被擦回彩虹
+15:11:25	s=coding  	PreToolUse 	Edit
+15:11:27	s=thinking	PostToolUse	Edit
+```
+
+液态呼吸一个周期就要一两秒,连一次完整呼吸都走不完,视觉上只是彩虹里偶尔闪一下别的颜色,读不出信息。而且这条 hook 不带任何新信息 —— 它只是把灯还原。
+
+去掉之后灯保持在**最近一次动作**的颜色上:连续编辑期间稳定青紫呼吸,跑命令期间稳定黄色扫描,直到下一个 `PreToolUse`、`Stop` 或 `PermissionRequest` 才变。代价是 `thinking` 彩虹只在「提交提问后到第一次工具调用前」和纯对话轮次出现,读文件、搜索这类无 hook 的工具期间灯不变 —— 恰好也对,那些阶段本来就该算「在想」。附带好处:`PostToolUseFailure` 的 `error` 不会再被同一次调用的 `thinking` 抢掉。
+
+同理,`PostCompact → thinking` 要留着 —— 它不是高频还原,而是配对 `PreCompact → busy` 的收尾,少了它压缩结束后黄扫描会一直卡住。
 
 同理,别试图用 `sleep` 给 `Stop` 争抢最后一棒——延后只会让它更容易撞上后面的事件。要排查覆盖顺序,设 `LED_DEBUG=1` 看 `debug.log` 里的 `event=` 字段,直接定位是哪个事件发的。
 
@@ -359,8 +373,8 @@ LED_PYTHON=/usr/bin/python3 led.sh status
 **灯亮着但状态不对** — 先设 `LED_DEBUG=1` 跑一轮,看 `$LED_DATA_DIR/debug.log`(默认 `<repo>/data/debug.log`)里最后落地的是哪个 `event=`:
 
 ```
-2026-07-25 15:13:01	led=all	s=single  	plat=claude	event=PostToolUse	tool=Bash	rc=0
-2026-07-25 15:13:01	led=0 	s=thinking	plat=claude	event=PostToolUse	tool=Bash	rc=0
+2026-07-25 15:13:01	led=all	s=single  	plat=claude	event=PreToolUse	tool=Edit	rc=0
+2026-07-25 15:13:01	led=0 	s=coding  	plat=claude	event=PreToolUse	tool=Edit	rc=0
 2026-07-25 15:13:05	led=1 	s=busy    	plat=codex 	event=PreToolUse	tool=Bash	rc=0
 2026-07-25 15:14:20	led=—	s=—     	plat=claude	event=SessionEnd	tool=—	rc=—	reason=clear	cwd=/Users/me/work/project-a
 ```
