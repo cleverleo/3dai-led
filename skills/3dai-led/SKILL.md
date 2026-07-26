@@ -252,6 +252,7 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 | UserPromptSubmit | — | thinking |
 | PreToolUse | `Edit\|Write\|NotebookEdit` | coding |
 | PreToolUse | `Bash` | busy |
+| PostToolUse | `Bash` | thinking |
 | PostToolUseFailure | — | error |
 | PermissionRequest / Notification | — | waiting |
 | SubagentStart | — | thinking |
@@ -288,7 +289,9 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 
 **不要给 `SubagentStop` 挂灯效** — 实测它在每轮结束时都会触发,即使这一轮压根没启动过 subagent,而且**排在 `Stop` 之后约 1 秒**。给它挂 `thinking` 会把 `Stop` 刚点亮的 `success` 盖掉,表现为「一轮结束后灯还在转彩虹,从来不变绿」。subagent 结束不需要单独的灯效,下一个 `PreToolUse` 或 `Stop` 自然会接上。
 
-**也不要给 `PostToolUse` 挂 `thinking`** — 曾经挂过,是「`coding` 根本看不见」的根因。它每个工具调用都触发一次,而 `Edit` 通常只花一两秒:
+**`PostToolUse` 只挂 `Bash`,matcher 不能放宽也不能整条摘掉** — 这条两头都踩过坑,现在停在中间。
+
+*第一次踩坑:全挂*(每个工具都 `→ thinking`)。这是「`coding` 根本看不见」的根因 —— `Edit` 通常只花一两秒:
 
 ```
 15:11:19	s=coding  	PreToolUse 	Edit
@@ -297,9 +300,15 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 15:11:27	s=thinking	PostToolUse	Edit
 ```
 
-液态呼吸一个周期就要一两秒,连一次完整呼吸都走不完,视觉上只是彩虹里偶尔闪一下别的颜色,读不出信息。而且这条 hook 不带任何新信息 —— 它只是把灯还原。
+液态呼吸一个周期就要一两秒,连一次完整呼吸都走不完,视觉上只是彩虹里偶尔闪一下别的颜色,读不出信息。
 
-去掉之后灯保持在**最近一次动作**的颜色上:连续编辑期间稳定青紫呼吸,跑命令期间稳定黄色扫描,直到下一个 `PreToolUse`、`Stop` 或 `PermissionRequest` 才变。代价是 `thinking` 彩虹只在「提交提问后到第一次工具调用前」和纯对话轮次出现,读文件、搜索这类无 hook 的工具期间灯不变 —— 恰好也对,那些阶段本来就该算「在想」。附带好处:`PostToolUseFailure` 的 `error` 不会再被同一次调用的 `thinking` 抢掉。
+*第二次踩坑:整条摘掉*。灯改为停在最近一次动作的颜色上,`coding` 是看见了,但 `busy` 变成了背景色 —— `Bash` 跑完没人还原,而 `Read` / `Grep` / `Task` / `WebFetch` 这些工具压根没挂 hook,灯就一直冻在上一次的黄扫描上。开 `LED_DEBUG=1` 实测一个 `Bash` 密集的会话,22 分钟里 `PreToolUse → busy` 触发 32 次,是 `Stop → success`(8 次)的四倍;把「正在干活」的窗口单独切出来算,**90% 的时间灯是黄的**。同一根灯带上另一个 `Bash` 用得少的会话只有 31% —— 说明不是设备问题,是事件分布造成的。
+
+*现在的取法*:按工具区别对待。`Bash` 和 `Edit` 的时长形状相反 —— `Bash` 常跑几十秒,黄扫描看得完整,结束后回 `thinking` 才是准的;`Edit` 太短,还原反而擦掉信息。所以 `PostToolUse` 用 `matcher: "Bash"` 卡死,**放宽就退回第一个坑,摘掉就退回第二个**。
+
+代价是读文件、搜索这类无 hook 的工具期间灯停在 `thinking` 彩虹上 —— 恰好也对,那些阶段本来就该算「在想」。
+
+待观察:`Bash` 失败时 `PostToolUse` 是否也跟着触发一次。若两者都发,`thinking` 和 `PostToolUseFailure → error` 的先后由 Claude Code 决定,配置表的顺序管不着。真出现「命令失败但只闪了下彩虹」,看 `debug.log` 里这两个 `event` 的时间戳再定夺。
 
 同理,`PostCompact → thinking` 要留着 —— 它不是高频还原,而是配对 `PreCompact → busy` 的收尾,少了它压缩结束后黄扫描会一直卡住。
 

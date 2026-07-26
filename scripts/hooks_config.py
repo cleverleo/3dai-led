@@ -27,11 +27,20 @@ HOOKS = [
     ("UserPromptSubmit",   None,                     "thinking", True),
     ("PreToolUse",         "Edit|Write|NotebookEdit", "coding",  True),
     ("PreToolUse",         "Bash",                   "busy",     True),
-    # 不挂 PostToolUse —— 它每个工具调用都触发一次「切回 thinking」,而 Edit 通常只花
-    # 一两秒,coding 的液态呼吸连一个周期都走不完就被彩虹擦掉,肉眼看不见。它也不带
-    # 任何新信息(只是把灯还原),去掉之后灯保持在「最近一次动作」的颜色上:连续编辑
-    # 期间稳定青紫、跑命令期间稳定黄扫描,到下一个 PreToolUse / Stop 才变。附带好处是
-    # PostToolUseFailure 的 error 不会再被同一次调用的 thinking 抢掉。
+    # PostToolUse 只挂 Bash,靠 matcher 卡死 —— 不能不挂,也不能全挂,两头都踩过坑:
+    #   · 全挂过一次(每个工具都切回 thinking),是「coding 从来看不见」的根因:Edit
+    #     通常只花一两秒,液态呼吸连一个周期都走不完就被彩虹擦掉。
+    #   · 于是整条摘掉,又走到另一个极端:Bash 跑完没人还原,而 Read/Grep/Task 这些
+    #     工具压根没挂 hook,灯就一直冻在上一次的黄扫描上。实测一个 Bash 密集的会话,
+    #     干活期间 90% 的时间是 busy —— 黄色从「正在跑命令」退化成了背景色。
+    # Bash 和 Edit 的时长形状相反:Bash 常跑几十秒,黄扫描看得完整,结束后回 thinking
+    # 才是准的;Edit 太短,还原反而擦掉信息。所以按工具区别对待,而不是一刀切。
+    # 别把 matcher 放宽 —— 一放宽就退回第一个坑。
+    ("PostToolUse",        "Bash",                   "thinking", True),
+    # 待观察:Bash 失败时 PostToolUse 是否也跟着触发一次。若两者都发,thinking 和
+    # error 的先后由 Claude Code 决定,这张表的顺序管不着(它只决定写进 settings.json
+    # 的顺序)。真出现「命令失败但只闪了下彩虹」,设 LED_DEBUG=1 看 debug.log 里这两个
+    # event 的时间戳,再决定是否把 PostToolUse 的 matcher 收窄或加延迟。
     ("PostToolUseFailure", None,                     "error",    True),
     ("PermissionRequest",  None,                     "waiting",  True),
     ("Notification",       None,                     "waiting",  True),
