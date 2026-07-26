@@ -34,17 +34,6 @@
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/python3 \"$(git rev-parse --show-toplevel)/scripts/codex_hook.py\" thinking",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
     "PermissionRequest": [
       {
         "hooks": [

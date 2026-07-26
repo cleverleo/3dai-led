@@ -71,6 +71,7 @@ hook 里写的是本仓库 `led.sh` 的**绝对路径**,不复制、不软链接
 - **`SessionEnd` 的 `reason` 是 `clear` / `resume` 时不能释放租约**,会话还在继续,释放会导致灯灭一下再亮且可能换灯珠。
 - **`SessionEnd` 的 hook 不能设 `async`**(用 `timeout: 8`),异步清理在进程退出时来不及跑完会泄漏槽位;其余 hook 必须 `async`,否则设备离线时每次操作都多等 2 秒。
 - **不要给 `SubagentStop` 挂灯效** —— 它每轮结束都触发,且排在 `Stop` 之后约 1 秒,会把 `success` 盖成 `thinking`。
+- **`PostToolUse` 也不挂**(Claude 和 Codex 两边都不挂)。它每个工具调用都把灯还原成 `thinking`,而 `Edit` 只花一两秒,`coding` 的呼吸动画连一个周期都走不完就被彩虹擦掉 —— 这是「coding 从来看不见」的根因。灯改为停在**最近一次动作**的颜色上,下一个 `PreToolUse` / `Stop` / `PermissionRequest` 自然接棒。别因为「读文件时灯还显示 coding 不够准」把它加回来。`PostCompact → thinking` 是例外,要留:它是 `PreCompact → busy` 的收尾,少了它黄扫描会卡住。
 - **`hooks_config.py` 认 hook 靠形状**(`OURS_RE`:`led.sh` + 合法状态词),不认路径 —— 旧安装、软链接、另一份副本都能认出来,重装才真正幂等。反过来也不能只认路径里的 `3dai-led`,那会误删用户挂在同目录下的其他脚本。
 - **设备地址三级回退**:`LED_HOST` 环境变量 > `data/host` 文件 > 占位符。中间那级是关键,少了它在终端手动排查时会静默打向一个不存在的地址。
 - **curl 永不阻断调用方**:`-m 2` 超时,失败静默,`poke()` 永远 `return 0`。

@@ -27,7 +27,11 @@ HOOKS = [
     ("UserPromptSubmit",   None,                     "thinking", True),
     ("PreToolUse",         "Edit|Write|NotebookEdit", "coding",  True),
     ("PreToolUse",         "Bash",                   "busy",     True),
-    ("PostToolUse",        None,                     "thinking", True),
+    # 不挂 PostToolUse —— 它每个工具调用都触发一次「切回 thinking」,而 Edit 通常只花
+    # 一两秒,coding 的液态呼吸连一个周期都走不完就被彩虹擦掉,肉眼看不见。它也不带
+    # 任何新信息(只是把灯还原),去掉之后灯保持在「最近一次动作」的颜色上:连续编辑
+    # 期间稳定青紫、跑命令期间稳定黄扫描,到下一个 PreToolUse / Stop 才变。附带好处是
+    # PostToolUseFailure 的 error 不会再被同一次调用的 thinking 抢掉。
     ("PostToolUseFailure", None,                     "error",    True),
     ("PermissionRequest",  None,                     "waiting",  True),
     ("Notification",       None,                     "waiting",  True),
