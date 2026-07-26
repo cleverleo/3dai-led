@@ -308,7 +308,20 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 
 代价是读文件、搜索这类无 hook 的工具期间灯停在 `thinking` 彩虹上 —— 恰好也对,那些阶段本来就该算「在想」。
 
-待观察:`Bash` 失败时 `PostToolUse` 是否也跟着触发一次。若两者都发,`thinking` 和 `PostToolUseFailure → error` 的先后由 Claude Code 决定,配置表的顺序管不着。真出现「命令失败但只闪了下彩虹」,看 `debug.log` 里这两个 `event` 的时间戳再定夺。
+**`PostToolUse` 和 `PostToolUseFailure` 互斥,不会打架。** 曾担心 `Bash` 失败时两者都触发、`thinking` 把 `error` 的红闪盖掉,实测两种失败方式都不会:
+
+```
+16:50:18	s=busy    	PreToolUse         	Bash    ← 成功的命令
+16:50:18	s=thinking	PostToolUse        	Bash
+
+16:50:21	s=busy    	PreToolUse         	Bash    ← exit 42
+16:50:24	s=error   	PostToolUseFailure 	Bash       没有 PostToolUse
+
+16:50:44	s=busy    	PreToolUse         	Bash    ← command not found
+16:50:45	s=error   	PostToolUseFailure 	Bash       没有 PostToolUse
+```
+
+成功走 `PostToolUse`,失败走 `PostToolUseFailure`,二选一。附带好处:失败后没人还原,`error` 会一直留在灯上直到下一个动作。
 
 同理,`PostCompact → thinking` 要留着 —— 它不是高频还原,而是配对 `PreCompact → busy` 的收尾,少了它压缩结束后黄扫描会一直卡住。
 

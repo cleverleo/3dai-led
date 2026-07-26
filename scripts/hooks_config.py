@@ -37,10 +37,9 @@ HOOKS = [
     # 才是准的;Edit 太短,还原反而擦掉信息。所以按工具区别对待,而不是一刀切。
     # 别把 matcher 放宽 —— 一放宽就退回第一个坑。
     ("PostToolUse",        "Bash",                   "thinking", True),
-    # 待观察:Bash 失败时 PostToolUse 是否也跟着触发一次。若两者都发,thinking 和
-    # error 的先后由 Claude Code 决定,这张表的顺序管不着(它只决定写进 settings.json
-    # 的顺序)。真出现「命令失败但只闪了下彩虹」,设 LED_DEBUG=1 看 debug.log 里这两个
-    # event 的时间戳,再决定是否把 PostToolUse 的 matcher 收窄或加延迟。
+    # 和上面那条互斥,不会打架:实测(exit 42 和 command-not-found 两种失败方式)Bash
+    # 失败时只发 PostToolUseFailure,PostToolUse 根本不触发,所以 thinking 盖不掉 error。
+    # 附带的好处是失败后没人还原,红闪会一直留到下一个动作 —— 正是想要的。
     ("PostToolUseFailure", None,                     "error",    True),
     ("PermissionRequest",  None,                     "waiting",  True),
     ("Notification",       None,                     "waiting",  True),
