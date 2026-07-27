@@ -21,7 +21,7 @@ off        全灭              待机
 
 一颗灯很好点。麻烦的是**多个工作目录、多个会话、多个工具同时在跑**:直接写死灯珠索引的话,灯反映的永远是最后一个发消息的那个,失去参考价值。
 
-所以 8 颗灯珠按 **(平台, 工作目录)** 动态分配:每个组合抢占一颗,同一组合下的多个会话共享同一颗并做引用计数,最后一个退出时才熄灯归还。平台名让同一个目录里并行的 Claude Code 和 codex 各占一颗灯,状态不互相覆盖,一方结束也不会顺手熄掉另一方的灯。只有一条租约在跑时自动切成整条灯带表现同一个状态(比只亮一颗醒目得多),第二条进来时自动切回独立模式。
+所以 8 颗灯珠按 **(平台, 工作目录)** 动态分配:每个组合抢占一颗,同一组合下的多个会话共享同一颗并做引用计数,最后一个退出时才熄灯归还。平台名让同一个目录里并行的 Claude Code、codex、opencode 各占一颗灯,状态不互相覆盖,一方结束也不会顺手熄掉另一方的灯。只有一条租约在跑时自动切成整条灯带表现同一个状态(比只亮一颗醒目得多),第二条进来时自动切回独立模式。
 
 租约表是一个无锁 JSON:稳定态纯读不写(一轮对话十几次 hook,只有第一次落盘),写入靠 `os.replace()` 原子替换,崩溃残留的租约由超时回收。取舍的完整推导写在 [`skills/3dai-led/lease.py`](skills/3dai-led/lease.py) 顶部。
 
@@ -40,11 +40,11 @@ cd 3dai-led
 ./install.sh --host <你的设备IP>
 ```
 
-装完分别在 Claude Code 和 Codex 里打开一次 `/hooks`,重载并信任 hook,然后随便说句话 —— 灯应该开始转彩虹。
+装完分别在 Claude Code 和 Codex 里打开一次 `/hooks`,重载并信任 hook;opencode 重开一个即可。然后随便说句话 —— 灯应该开始转彩虹。
 
 `--host` 首次安装必填 —— 猜一个默认值只会装出一套指向不存在设备、灯不亮也不报错的配置。之后重装可以省略,沿用 `settings.json` 里已有的地址。
 
-`install.sh` 会把 Claude 的 13 条 hook 写进 `~/.claude/settings.json`,并把 Codex hooks 写进 `~/.codex/hooks.json`。两边写前都会自动备份,只动本项目自己的条目,用户已有命令原样保留;可以反复运行,不会累积重复项。`./uninstall.sh` 会同时卸载两边配置。两个脚本都支持 `--dry-run`。
+`install.sh` 写三处配置:Claude Code 的 13 条 hook 进 `~/.claude/settings.json`,Codex 的 10 条 hook 进 `~/.codex/hooks.json`,opencode 的 1 个插件条目进 `~/.config/opencode/opencode.jsonc`。三处写前都会自动备份,只动本项目自己的条目,用户已有的命令 / 插件原样保留;可以反复运行,不会累积重复项。没装某个工具也无所谓。`./uninstall.sh` 会把三处一起卸掉。两个脚本都支持 `--dry-run`。
 
 **代码是就地引用的** —— hook 里写的是本仓库中 `led.sh` 的绝对路径,不复制、不做软链接。改了代码立刻生效,代价是仓库不能挪窝:移动之后重跑一次 `./install.sh`。
 
@@ -52,9 +52,9 @@ cd 3dai-led
 
 `~/.claude` 下只留两样东西:`settings.json` 里的 hook,和 Claude Code 强制要求的技能加载点 `skills/3dai-led/SKILL.md`。代码、运行时数据、设备地址全在仓库内(`data/`,已 gitignore)。
 
-## 接 Claude Code 以外的工具
+## 接别的工具
 
-核心是两个与工具无关的层:HTTP API,和 `led.sh` 这个槽位租约脚本。只要你的工具能在生命周期事件上执行命令,就能接:
+核心是两个与工具无关的层:HTTP API,和 `led.sh` 这个槽位租约脚本。开箱支持 Claude Code、Codex、opencode。只要你的工具能在生命周期事件上执行命令,就能接:
 
 ```bash
 led.sh <state> [platform]   # 抢占或复用当前 (平台, 目录) 的槽位并点灯
@@ -76,6 +76,8 @@ led.sh success
 ```
 
 两条通用约束:**点灯要异步**(设备离线时 curl 会阻塞满 2 秒),**释放要同步**(异步清理在进程退出时可能来不及跑完,槽位就泄漏了)。
+
+挂不了命令、只有插件机制的工具也能接 —— opencode 就是这么接的(`scripts/opencode_plugin.ts`),那一层同样只做「事件 → 状态词 → 调 `led.sh`」的翻译。它顺带解决了一个别处没有的问题:opencode 压根没有会话结束的钩子,所以插件用一根管道挂了个守护进程,opencode 一死(哪怕是 `SIGKILL`)就替它把租约还回去。推导写在 [`SKILL.md`](skills/3dai-led/SKILL.md) 的 opencode 那节。
 
 ## 直接用 HTTP
 
@@ -100,6 +102,8 @@ scripts/hooks_config.py        settings.json 的 hook 读写(两个脚本共用)
 scripts/codex_hooks_config.py  Codex hooks.json 的幂等安装/卸载
 scripts/codex_hook.py          Codex stdin/异步适配,最终调用 led.sh
 config/codex-hooks.json        Codex 生命周期事件模板(安装后写入用户配置)
+scripts/opencode_config.py     opencode 配置里插件条目的幂等安装/卸载
+scripts/opencode_plugin.ts     opencode 插件:事件 → 状态词 → led.sh
 skills/3dai-led/
   SKILL.md                     完整文档,也是给 Claude Code 读的技能说明
   led.sh                       槽位租约 + HTTP

@@ -12,7 +12,7 @@ ESP32 + WS2812 灯带(8 颗灯珠),通过局域网 HTTP 控制。让 AI 编码�
 - **HTTP API** — 设备本身的接口,任何能发 HTTP 请求的东西都能驱动它
 - **`led.sh`**(+ 同目录的 `lease.py`)— 槽位租约脚本,解决多个工具 / 多个工作目录 / 多个会话并行时争抢灯珠的问题
 
-接入方式取决于你用的工具能不能在生命周期事件上执行命令。下面给了 Claude Code 的完整配置作为示例,其他工具同理。
+接入方式取决于你用的工具在生命周期事件上给了什么口子:能执行命令的(Claude Code、Codex)直接挂 `led.sh`,只有插件机制的(opencode)写一层薄薄的翻译。下面两种都给了完整配置作为示例,其他工具同理。
 
 ---
 
@@ -25,7 +25,7 @@ ESP32 + WS2812 灯带(8 颗灯珠),通过局域网 HTTP 控制。让 AI 编码�
 ./uninstall.sh                     # 卸载(默认保留 leases.json / debug.log,加 --purge 一起删)
 ```
 
-`install.sh` 做四件事:清理旧版残留的脚本副本、建数据目录、装 `SKILL.md`、把 13 条 hook 写进 `~/.claude/settings.json`(写前自动备份成 `settings.json.bak-<时间戳>`,只动 3dai-led 自己的条目,同一事件下你挂的其他命令原样保留)。可以反复跑,不会累积重复项。
+`install.sh` 做这几件事:清理旧版残留的脚本副本、建数据目录、装 `SKILL.md`,然后写三处配置 —— Claude Code 的 `~/.claude/settings.json`(13 条 hook)、Codex 的 `~/.codex/hooks.json`(10 条 hook)、opencode 的 `~/.config/opencode/opencode.jsonc`(1 个插件条目)。三处写前都自动备份成 `<原名>.bak-<时间戳>`,只动 3dai-led 自己的条目,你挂的其他命令 / 插件原样保留。可以反复跑,不会累积重复项;没装某个工具也无所谓,那份配置就是新建一个。
 
 **代码是就地引用的** —— hook 里写的是本仓库中 `led.sh` 的绝对路径,不复制、不做软链接。改了代码立刻生效,代价是仓库不能挪窝:移动或删除之后重跑一次 `./install.sh` 即可。
 
@@ -225,6 +225,8 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 
 通用做法:在工具的生命周期事件上执行 `led.sh <state> <platform>`,并在会话结束时执行 `led.sh release <platform>`。只要能挂命令,就能接。平台名随便起,同一个工具的所有 hook 用同一个即可 —— 它决定了这个工具在每个目录里独占一颗灯珠。
 
+挂不了命令的(比如 opencode 只有 JS 插件)也不难接:那一层照样只做「事件 → 状态词 → 调 `led.sh`」的翻译,不碰租约、不发 HTTP。见下面 opencode 那节。
+
 事件到灯效的映射建议:
 
 | 时机 | 状态 |
@@ -346,6 +348,59 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 
 设 `LED_DEBUG=1` 时,每次 `SessionEnd` 会在 `debug.log` 留一行带 `reason=` 和 `cwd=` 的记录。官方文档未说明「直接关终端窗口」属于哪种 reason,查这个字段可以确认;如果开着 debug 却没有这行,说明进程被 SIGKILL、清理没跑到,只能靠 `ts` 过期兜底回收。
 
+### 示例:opencode
+
+opencode 没有 shell hook,只有跑在自己进程里的 JS 插件,所以这一层是代码而不是一张配置表:`scripts/opencode_plugin.ts`。它仍然只做翻译 —— 把 opencode 的事件映射成状态词,再 spawn 仓库里那个 `led.sh`,租约和 HTTP 一概不碰。
+
+`./install.sh` 把它写进 `~/.config/opencode/opencode.jsonc`(没有这个文件就用 `opencode.json`)的 `plugin` 数组:
+
+```json
+{ "plugin": ["file:///path/to/repo/scripts/opencode_plugin.ts"] }
+```
+
+opencode 的加载器对 `file://` URL 有特判:指向的是**文件**(而不是带 `package.json` 的目录)时原样 import,所以能直接引用仓库里那一份,不必往 `~/.config/opencode/plugin/` 复制或做软链接 —— 和 hook 里写绝对路径是同一个取舍,改了代码立刻生效,代价同样是仓库不能挪窝。
+
+插件不是进程启动就加载的,而是第一次真正处理提示词时按需加载(`opencode serve` 空跑、只建 session 都不会触发)。改完重开一个 opencode 即可。
+
+| 钩子 / 事件 | 条件 | → 状态 |
+|-------------|------|--------|
+| `chat.message` | — | thinking |
+| `tool.execute.before` | `bash` | busy |
+| `tool.execute.before` | `edit` / `write` / `patch` | coding |
+| `tool.execute.after` | `bash` | thinking |
+| `permission.ask` | — | waiting |
+| `experimental.session.compacting` | — | busy |
+| 事件 `session.compacted` | — | thinking |
+| 事件 `session.idle` | — | success |
+| 事件 `session.error` | `MessageAbortedError` | success |
+| 事件 `session.error` | 其他 | alarm |
+| 事件 `session.deleted` | — | `release` |
+| 进程退出 | — | `release`(见下面的守护进程) |
+
+工具只认 `bash` / `edit` / `write` / `patch` 这四个,`read` / `grep` / `glob` / `list` / `task` 故意不挂 —— 和 Claude Code 那边 `PostToolUse` 只挂 `Bash` 是同一条推导,全挂的话 `coding` 的液态呼吸连一个周期都走不完就被擦掉。
+
+**`session.idle` 一定跟在 `session.error` 后面。** 实测一轮出错的事件序列是 `session.status → session.error → session.status → session.idle`。照直接映射的话,`alarm` 的红蓝翻转会被 `idle` 的绿色呼吸秒擦掉,报错等于看不见。所以插件在出错时记一笔,把紧随其后的那次 `idle` 吃掉,让报错的灯一直留到下一个动作 —— 和 Claude Code 那边「失败走 `PostToolUseFailure`、没人还原」是同一个效果。这个标记在下一次 `chat.message` 时清掉,否则某次出错后 `idle` 万一没来,它会把**下一轮**正常结束的 `success` 吃掉。
+
+**opencode 没有会话结束的钩子,租约靠一个守护进程还。** 它确实有 `server.instance.disposed` 事件,但插件收不到:看实现,`disposeContext` 是**先**把实例的作用域拆掉、**再**发这个事件,而插件的事件订阅正挂在那个作用域上。实测跑完一次 opencode,租约确实留在 `leases.json` 里没还,灯要等 `LED_STALE_MIN` 过期才熄。
+
+所以插件在第一次见到某个会话时,给它 spawn 一个守护进程:
+
+```sh
+cat >/dev/null 2>&1; sleep 1; printf "%s" "$2" | led.sh release opencode
+```
+
+插件持有这根管道的写端并且一直不关。opencode 活着时 `cat` 永远读不到东西;进程一消失,内核关掉写端,`cat` 读到 EOF,接着把租约还回去。相比轮询 `kill -0`,这条路不占 CPU、反应即时,而且**连 `SIGKILL` 都盖得住** —— 进程怎么死的不重要,fd 总会被内核回收。这一点上它反而比 hook 可靠:Claude Code 的 `SessionEnd` 在 `SIGKILL` 时是跑不到的。
+
+三个细节:
+
+- **`sleep 1` 不能省。** opencode 死的那一刻,前面甩出去的那些异步点灯可能还没跑到 `lease.py`;抢在它们前面还,租约会被后到的 `acquire` 重新建出来,灯反而一直亮到过期。等一秒让它们落地,代价只是灯晚灭一秒
+- **这一秒里在同一目录重开 opencode 也不会误熄。** `release` 只摘自己那个 `session_id`,新会话的还在 `sids` 里,租约就留着
+- **不用信号处理器**(`process.on("SIGINT")` 之类)是刻意的:在 Node/Bun 里挂上监听会顶掉默认的终止行为,弄不好把 opencode 变成 Ctrl-C 杀不掉的进程。宁可多一个 `sh`
+
+正常收到 `session.deleted` 而归还时,插件会先把对应的守护进程 kill 掉再还 —— 留着的话它会在退出时再还一次,虽然无害(`lease.py` 对已经不在 `sids` 里的会话直接返回空),但 `debug.log` 里会多出一行看不懂的 `release`。守护进程还的那一次,`event=` 列记的是 `guard`,一眼能和插件自己发的区分开。
+
+插件模块里**只能导出一个函数**:opencode 的加载器在模块没有 `server` 导出时,会把每个导出的函数都当成插件调用一遍,导出个辅助函数就会被当插件跑。
+
 ### 示例:任意进程 / 脚本
 
 没有 hook 机制的工具,或者想在自己的构建脚本里用:
@@ -379,9 +434,13 @@ led.sh status                               # 2. 当前目录是否拿到槽位
 
 ```bash
 python3 scripts/hooks_config.py show --settings ~/.claude/settings.json
+python3 scripts/codex_hooks_config.py show --hooks ~/.codex/hooks.json
+python3 scripts/opencode_config.py show --config ~/.config/opencode/opencode.jsonc
 ```
 
 打印出来的路径若指向一个不存在的位置,在仓库新位置重跑 `./install.sh` 即可。
+
+**只有 opencode 的灯不亮** — 先确认插件条目还在(上面第三条命令),再确认它是**第一次处理提示词**时才加载的:`opencode serve` 空跑、只建 session 都不会触发,只发一句话才会。要看它到底跑没跑,`LED_DEBUG=1 opencode` 跑一轮再看 `debug.log` 里有没有 `plat=opencode` 的行。整个仓库被挪走时插件会 import 失败,opencode 不会把这个错打到终端上,表现就是灯静悄悄地不亮。
 
 若 `led.sh status` 报错或没有输出,确认 python3 在 hook 继承的 `PATH` 里(`lease.py` 靠它跑),必要时用 `LED_PYTHON` 显式指定:
 

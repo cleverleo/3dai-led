@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-主机侧的接入代码,把 AI 编码工具的生命周期事件翻译成一条 ESP32 + WS2812 灯带(8 颗灯珠)的灯效。**设备固件不在本仓库**,是买来的成品,HTTP 接口是既有事实,不可改 —— 所有设计约束都来自它。
+主机侧的接入代码,把 AI 编码工具(Claude Code / Codex / opencode)的生命周期事件翻译成一条 ESP32 + WS2812 灯带(8 颗灯珠)的灯效。**设备固件不在本仓库**,是买来的成品,HTTP 接口是既有事实,不可改 —— 所有设计约束都来自它。
 
 没有构建系统、没有依赖、没有测试套件。只有 bash + python3 标准库,macOS/Linux 自带即可跑。
 
@@ -20,10 +20,16 @@ skills/3dai-led/led.sh reset       # 清空全部租约并熄灯,回到干净状
 LED_DEBUG=1 skills/3dai-led/led.sh thinking   # 手动打一次灯,往 data/debug.log 记一行
 
 python3 scripts/hooks_config.py show --settings ~/.claude/settings.json   # 核对已装的 hook
+python3 scripts/opencode_config.py show --config ~/.config/opencode/opencode.jsonc
 echo '{"session_id":"t1"}' | skills/3dai-led/led.sh coding claude         # 模拟 hook 调用
+
+# opencode 插件的一次真实往返:不花 token,bogus model 必然报错,但事件照常走完
+LED_DATA_DIR=/tmp/led LED_DEBUG=1 opencode run --model bogus/bogus hi
 ```
 
-**验证改动没有跑测试这条路**,只能实机跑:`./install.sh --dry-run` 看配置变化,`LED_DEBUG=1` 跑一轮真实对话再读 `data/debug.log`,配合 `led.sh status` 看租约表。改完 hook 表要在 Claude Code 里打开一次 `/hooks` 菜单触发重载。
+**验证改动没有跑测试这条路**,只能实机跑:`./install.sh --dry-run` 看配置变化,`LED_DEBUG=1` 跑一轮真实对话再读 `data/debug.log`,配合 `led.sh status` 看租约表。改完 hook 表要在 Claude Code 里打开一次 `/hooks` 菜单触发重载;改完 opencode 插件重开一个 opencode 即可。
+
+opencode 那层可以不花 token 地验:上面那条 `--model bogus/bogus` 会走完 `chat.message → session.error → session.idle → 退出归还` 的完整链路。想单独验事件到状态的映射,用 `bun` 直接 `import` 插件文件、手动调它返回的那几个 hook 就行 —— 插件不依赖 opencode 的运行时,只依赖入参里的 `directory`。
 
 改了 `skills/3dai-led/SKILL.md` 必须重跑 `./install.sh` —— 它是复制到 `~/.claude/skills/` 的,不是软链接(除非装的时候用了 `--skill link`)。其他代码就地引用,改完立即生效。
 
@@ -34,11 +40,12 @@ echo '{"session_id":"t1"}' | skills/3dai-led/led.sh coding claude         # 模�
 ```
 编码工具 hook  ──stdin JSON──▶  led.sh  ──stdin 透传──▶  lease.py
 (settings.json)                    │                        │
-                                   │      ◀──\037 分隔的一行──┘
-                                   └──curl──▶  设备 HTTP API
+opencode 插件  ──spawn────────▶    │      ◀──\037 分隔的一行──┘
+(opencode.jsonc)                   └──curl──▶  设备 HTTP API
 ```
 
 - `scripts/hooks_config.py` —— 只在安装/卸载时跑,读写 `~/.claude/settings.json`。`HOOKS` 表(事件 → 状态 → 是否异步)是 Claude Code 接入的唯一真相来源。
+- `scripts/opencode_plugin.ts` —— opencode 没有 shell hook,只有跑在自己进程里的 JS 插件,所以这一层是代码不是配置表。职责边界和 hook 完全一样:事件 → 状态词 → spawn `led.sh`,不碰租约、不发 HTTP。`scripts/opencode_config.py` 负责往 `~/.config/opencode/opencode.jsonc` 的 `plugin` 数组里幂等地写一个 `file://` 条目。
 - `skills/3dai-led/led.sh` —— 唯一发 HTTP 和写日志的地方。不解析租约,不做决策。
 - `skills/3dai-led/lease.py` —— 唯一读写 `data/leases.json` 的地方。不发 HTTP,不知道设备存在。
 
@@ -46,7 +53,9 @@ echo '{"session_id":"t1"}' | skills/3dai-led/led.sh coding claude         # 模�
 
 ### 就地引用
 
-hook 里写的是本仓库 `led.sh` 的**绝对路径**,不复制、不软链接。因此仓库一旦移动或删除,所有目录的灯集体失效 —— 这是最常见的故障,排查先跑 `hooks_config.py show` 看路径是不是死链。
+hook 里写的是本仓库 `led.sh` 的**绝对路径**,不复制、不软链接。opencode 那边同理,`plugin` 数组里是指向仓库的 `file://` URL —— 加载器对 `file://` 有特判,指向文件(而非带 `package.json` 的目录)时原样 import,所以不必往 `~/.config/opencode/plugin/` 塞副本。
+
+因此仓库一旦移动或删除,所有目录的灯集体失效 —— 这是最常见的故障,排查先跑 `hooks_config.py show` / `opencode_config.py show` 看路径是不是死链。opencode 尤其隐蔽:插件 import 失败它不往终端上报,表现就是灯静悄悄地不亮。
 
 ### 租约:按 (平台, 工作目录) 抢灯珠
 
@@ -72,6 +81,9 @@ hook 里写的是本仓库 `led.sh` 的**绝对路径**,不复制、不软链接
 - **`SessionEnd` 的 hook 不能设 `async`**(用 `timeout: 8`),异步清理在进程退出时来不及跑完会泄漏槽位;其余 hook 必须 `async`,否则设备离线时每次操作都多等 2 秒。
 - **不要给 `SubagentStop` 挂灯效** —— 它每轮结束都触发,且排在 `Stop` 之后约 1 秒,会把 `success` 盖成 `thinking`。
 - **`PostToolUse` 只挂 `Bash`**(Claude 和 Codex 两边一致),`matcher` 既不能放宽也不能整条摘掉 —— 两头都踩过坑。全挂时每个工具都把灯还原成 `thinking`,而 `Edit` 只花一两秒,`coding` 的呼吸连一个周期都走不完就被彩虹擦掉(「coding 从来看不见」);整条摘掉后 `Bash` 跑完没人还原,而 `Read`/`Grep`/`Task` 压根没挂 hook,灯冻在黄扫描上 —— 实测 `Bash` 密集的会话干活期间 90% 时间是 `busy`,黄色退化成背景色。`Bash` 常跑几十秒、`Edit` 只有一两秒,时长形状相反,所以按工具区别对待。`PostCompact → thinking` 同样要留:它是 `PreCompact → busy` 的收尾,少了它黄扫描会卡住。
+- **opencode 的 `session.idle` 一定跟在 `session.error` 后面**(实测序列 `status → error → status → idle`)。不拦的话 `idle` 的 `success` 会把 `alarm` 秒擦掉,报错等于看不见。插件出错时记一笔,把紧随其后的那次 `idle` 吃掉;这个标记要在下一次 `chat.message` 时清,否则 `idle` 万一没来,它会去吃下一轮的 `success`。
+- **opencode 没有会话结束的钩子。** `server.instance.disposed` 插件收不到 —— `disposeContext` 先拆实例作用域、再发事件,而订阅正挂在那个作用域上;实测租约确实会漏。归还靠插件 spawn 的管道守护进程(`cat` 一根不关的管道,读到 EOF 就 `release`),连 `SIGKILL` 都盖得住。里面那句 `sleep 1` 不能省:opencode 死时前面甩出去的异步点灯可能还没落地,抢在它们前面还,租约会被后到的 `acquire` 重新建出来。**不要改用信号处理器** —— Node/Bun 里挂 `process.on("SIGINT")` 会顶掉默认终止行为,可能让 opencode Ctrl-C 杀不掉。
+- **opencode 插件模块只能导出一个函数。** 加载器在模块没有 `server` 导出时,会把每个导出的函数都当插件调用一遍,导出个辅助函数就会被当插件跑。同理 `import type` 之外不要 import `@opencode-ai/plugin` —— 仓库里没有 `node_modules`,只有类型导入才会被 bun 擦掉。
 - **`hooks_config.py` 认 hook 靠形状**(`OURS_RE`:`led.sh` + 合法状态词),不认路径 —— 旧安装、软链接、另一份副本都能认出来,重装才真正幂等。反过来也不能只认路径里的 `3dai-led`,那会误删用户挂在同目录下的其他脚本。
 - **设备地址三级回退**:`LED_HOST` 环境变量 > `data/host` 文件 > 占位符。中间那级是关键,少了它在终端手动排查时会静默打向一个不存在的地址。
 - **curl 永不阻断调用方**:`-m 2` 超时,失败静默,`poke()` 永远 `return 0`。
