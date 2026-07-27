@@ -11,9 +11,20 @@ SKILL_SRC="$REPO/skills/3dai-led"
 LED_SH="$SKILL_SRC/led.sh"
 HOOKS_CFG="$REPO/scripts/hooks_config.py"
 CODEX_HOOKS_CFG="$REPO/scripts/codex_hooks_config.py"
+OPENCODE_CFG_PY="$REPO/scripts/opencode_config.py"
 
 SETTINGS="${HOME}/.claude/settings.json"
 CODEX_HOOKS="${CODEX_HOME:-${HOME}/.codex}/hooks.json"
+
+# 和 install.sh 同一套取法:已经存在哪个就用哪个,OPENCODE_CONFIG 优先
+OPENCODE_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
+if [ -n "${OPENCODE_CONFIG:-}" ]; then
+  OPENCODE_CFG="$OPENCODE_CONFIG"
+elif [ -f "$OPENCODE_DIR/opencode.jsonc" ]; then
+  OPENCODE_CFG="$OPENCODE_DIR/opencode.jsonc"
+else
+  OPENCODE_CFG="$OPENCODE_DIR/opencode.json"
+fi
 SKILL_DST="${HOME}/.claude/skills/3dai-led"
 DATA_DIR="${LED_DATA_DIR:-$REPO/data}"
 PURGE=""
@@ -30,6 +41,8 @@ usage() {
   --data-dir <path>  数据目录,默认 <repo>/data
   --settings <path>  目标 settings.json,默认 ~/.claude/settings.json
   --codex-hooks <path> 目标 Codex hooks.json,默认 ~/.codex/hooks.json
+  --opencode-config <path>
+                     目标 opencode 配置,默认 ~/.config/opencode/opencode.jsonc
   --dry-run          只打印将要做的改动,不落盘
   -h, --help         显示本帮助
 EOF
@@ -43,6 +56,7 @@ while [ $# -gt 0 ]; do
     --data-dir)  DATA_DIR="${2:?--data-dir 需要一个路径}"; shift 2 ;;
     --settings)  SETTINGS="${2:?--settings 需要一个路径}"; shift 2 ;;
     --codex-hooks) CODEX_HOOKS="${2:?--codex-hooks 需要一个路径}"; shift 2 ;;
+    --opencode-config) OPENCODE_CFG="${2:?--opencode-config 需要一个路径}"; shift 2 ;;
     --dry-run)   DRY_RUN=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -94,6 +108,16 @@ else
   warn "找不到 $CODEX_HOOKS 或 codex_hooks_config.py,跳过"
 fi
 
+step "清理 opencode 配置"
+if [ -f "$OPENCODE_CFG" ] && [ -f "$OPENCODE_CFG_PY" ]; then
+  OPENCODE_CFG_ARGS=(remove --config "$OPENCODE_CFG")
+  [ -n "$DRY_RUN" ] && OPENCODE_CFG_ARGS+=(--dry-run)
+  printf '  '
+  "$PY" "$OPENCODE_CFG_PY" "${OPENCODE_CFG_ARGS[@]}"
+else
+  warn "找不到 $OPENCODE_CFG 或 opencode_config.py,跳过"
+fi
+
 # ---------- 3. 技能 ----------
 step "移除技能"
 if [ -L "$SKILL_DST" ]; then
@@ -130,4 +154,5 @@ if [ -n "$DRY_RUN" ]; then
 else
   echo "  仓库本身未改动:$REPO"
   echo "  分别在 Claude Code / Codex 里打开一次 /hooks,重载配置。"
+  echo "  opencode 的插件在启动时加载,重开一个 opencode 即可生效。"
 fi
