@@ -52,10 +52,11 @@ HOOKS = [
     ("SessionEnd",         None,                     "release",  False),
 ]
 
-# 平台名,作为第二个参数跟在状态后面。租约按 (platform, cwd) 归属,所以同一目录里
-# 并行跑 Claude Code 和 codex 时两边各占一颗灯珠,不会互相覆盖状态、也不会被对方的
-# SessionEnd 连带熄灯。写成 hook 命令的参数而不是 settings.json 的 env:一眼就能在
-# 配置里看出这条 hook 是谁挂的,换工具接入时也不用记得改另一处。
+# 平台名,作为第二个参数跟在状态后面。租约按 (platform, session_id) 归属,平台进 key
+# 是因为 session_id 只保证在自己那个工具里唯一 —— 同一目录里并行跑 Claude Code 和
+# codex 时两边各占一颗灯珠,不会互相覆盖状态、也不会被对方的 SessionEnd 连带熄灯。
+# 写成 hook 命令的参数而不是 settings.json 的 env:一眼就能在配置里看出这条 hook 是谁
+# 挂的,换工具接入时也不用记得改另一处。
 PLATFORM = "claude"
 
 # 判定一条 hook 是不是我们的:认「led.sh + 一个合法状态词」这个形状,不认具体路径。

@@ -2,19 +2,26 @@
 """3dai-led 槽位租约 —— 单个 JSON 文件,无锁。
 
     $LED_DATA_DIR/leases.json   (默认 <repo>/data/leases.json)
-    {"<platform>:<cwd>": {"slot": 0, "ts": <epoch 秒>, "sids": ["<session_id>", ...]}}
+    {"<platform>:<session_id>": {"slot": 0, "ts": <epoch 秒>, "cwd": "<仅展示>"}}
 
-归属粒度是**(平台, 工作目录)**:同一目录里 claude 和 codex 各抢一颗灯珠,状态互
-不覆盖;同一平台同一目录的多个会话才共享灯珠,靠 sids 做引用计数,最后一个退出时
-才熄灯归还。ts 是该租约的最近活动时间,兼作心跳。
+归属粒度是**(平台, 会话)**:一个会话一颗灯珠,从第一次点灯到退出为止都是同一颗,
+中途换工作目录也不换灯。ts 是该租约的最近活动时间,兼作心跳。
 
-平台必须进 key 而不是只作为一个字段:两个工具在同一目录并行时,谁的 SessionEnd
-先到就会把另一个的灯一起熄掉,而单独一个 platform 字段也放不下两条并存的记录。
+早先按 (平台, 工作目录) 归属,换掉是因为「一个会话只待在一个目录里」根本不成立:
+Claude Code 进 worktree、Bash 里 cd 到子目录,hook 进程的 $PWD 就变了,同一个会话
+会拿新 cwd 再抢一颗灯珠。归还更糟 —— release 只删当前 $PWD 算出的那一条,退出时
+$PWD 只可能落在其中一个目录上,其余几条永远等不到 release,只能熬满 STALE。实测
+一个会话吃掉三颗灯珠、其中两颗冻在半路的状态上再也不动,就是这么来的。
+
+平台仍然必须进 key:session_id 只保证在自己那个工具里唯一,跨工具不保证不撞。
+
+cwd 降级成纯展示字段(status 里给人看的),不参与归属判定。它只在写路径上顺手刷新,
+所以会话换了目录后,status 里的路径最多滞后 THROTTLE 秒才跟上 —— 无所谓,灯不动。
 
 ## 为什么不需要锁
 
-1. 稳定态只读。cwd 已持有灯珠、sid 已登记、ts 还新鲜(< THROTTLE 秒)时,
-   直接回灯珠号,一个字节都不写。一轮对话十几次 hook,只有第一次会写。
+1. 稳定态只读。会话已持有灯珠、ts 还新鲜(< THROTTLE 秒)时,直接回灯珠号,
+   一个字节都不写。一轮对话十几次 hook,只有第一次会写。
 2. 写入原子。先写同目录临时文件再 os.replace(),POSIX rename 保证读者要么
    看到旧的完整 JSON、要么看到新的,绝不会读到半截文件。
 3. 丢更新可以接受。两个进程恰好落在同一个几毫秒的读-改-写窗口里时,后写的
@@ -29,8 +36,8 @@ ts 的节流(THROTTLE)顺带解决了 sweep 的时机问题:活跃目录每 THRO
 必然走一次写路径,sweep 就挂在写路径上。所以别人崩溃残留的灯珠,最迟在
 STALE 到期后再过 THROTTLE 秒就会被回收,不必每次点灯都扫。
 
-被 SIGKILL 的会话其 sid 会永久留在 sids 里,导致同目录最后一个会话退出时
-也不熄灯;此后 ts 不再刷新,整条租约会在 STALE 之后被 sweep 清掉并熄灯。
+被 SIGKILL 的会话没机会 release,租约会一直占着灯珠;此后 ts 不再刷新,整条
+租约会在 STALE 之后被 sweep 清掉并熄灯。这是唯一的泄漏路径,而且有上界。
 """
 
 import json
@@ -53,18 +60,20 @@ THROTTLE = int(os.environ.get("LED_TS_THROTTLE", "60"))
 
 # 没报平台的调用方(手动敲 led.sh、没传第二个参数的脚本)统一归到这个名字下
 DEFAULT_PLATFORM = "cli"
-# 升级前的租约表 key 就是裸 cwd,那时只有 Claude Code 一个调用方
-LEGACY_PLATFORM = "claude"
 
 
-def make_key(platform, cwd):
-    """key = '<platform>:<cwd>'。cwd 一定以 / 开头,所以按第一个 : 切一定切得对。"""
-    return "%s:%s" % (platform, cwd)
+def make_key(platform, sid):
+    """key = '<platform>:<session_id>'。
+
+    平台名里的 : 已被 norm_platform() 换掉,所以按第一个 : 切一定切得对;sid 里
+    真出现 : 也无所谓,partition 只切第一个,剩下的原样留给 sid。
+    """
+    return "%s:%s" % (platform, sid)
 
 
 def split_key(key):
-    platform, _, cwd = key.partition(":")
-    return platform, cwd
+    platform, _, sid = key.partition(":")
+    return platform, sid
 
 
 def norm_platform(name):
@@ -107,14 +116,21 @@ def load():
 
 
 def migrate(table):
-    """把旧格式的裸 cwd key 就地改成 'claude:<cwd>'。
+    """把按 cwd 归属的老租约标记成过期,交给写路径上的 sweep() 去删并熄灯。
 
-    只在内存里转,下次走写路径时自然落盘。sids 里存的是 session_id,不受 key 变化
-    影响,所以升级时正在跑的会话不会掉租约、不会换灯珠。
+    老 key 有两代:更早的裸 cwd,和后来的 '<platform>:<cwd>'。两代的归属都是目录,
+    没法映射到某个 session_id —— 一条 cwd 租约背后可能压着好几个会话。所以不迁移,
+    只把 ts 置 0 让 sweep 当过期条目处理:灯珠腾出来、灯也灭掉,活着的会话下一次
+    hook 就用新 key 重抢一颗。升级只闪这一下,比留着两套 key 并存干净。
+
+    判据是 key 里 : 后面那截以 / 开头 —— 新 key 那截是 session_id,不会以 / 开头。
     """
-    for key in [k for k in table if k.startswith("/")]:
-        entry = table.pop(key)
-        table.setdefault(make_key(LEGACY_PLATFORM, key), entry)
+    for key, entry in table.items():
+        if not isinstance(entry, dict):
+            continue
+        _, _, tail = key.partition(":")
+        if key.startswith("/") or tail.startswith("/"):
+            entry["ts"] = 0
     return table
 
 
@@ -170,24 +186,24 @@ def normalize_single(table):
 def target_mode(table):
     """0 = 单项目(整条灯带一个状态),1 = 多项目(每颗灯珠独立)。
 
-    数的是租约条数而不是目录数:同一目录里 claude 和 codex 并行时是两颗灯,必须
-    切到多项目模式,否则两个状态会在整条灯带上互相覆盖。
+    数的是租约条数,不是目录数:同一目录里并行的两个会话是两颗灯,必须切到多项目
+    模式,否则两个状态会在整条灯带上互相覆盖。
     """
     return 0 if len(table) <= 1 else 1
 
 
-def acquire(key, sid):
+def acquire(key, cwd):
     """回 (灯珠号 or None, 需要熄灯的槽位号, 目标模式 or None)。
 
     满槽时灯珠号为 None,静默不点灯。目标模式为 None 表示走了快路径,不碰 /mode。
+    cwd 只往 entry 里塞一份给 status 显示,不参与任何判定。
     """
     now = int(time.time())
     table = load()
     entry = table.get(key)
 
-    # 快路径:一个字节都不写,也不碰设备的 /mode
+    # 快路径:一个字节都不写,也不碰设备的 /mode。key 里已经带了 sid,命中即是本会话
     if isinstance(entry, dict) and slot_of(entry) is not None \
-            and sid in entry.get("sids", []) \
             and now - entry.get("ts", 0) < THROTTLE:
         return slot_of(entry), [], None
 
@@ -196,9 +212,7 @@ def acquire(key, sid):
 
     if isinstance(entry, dict) and slot_of(entry) is not None:
         entry["ts"] = now
-        sids = entry.setdefault("sids", [])
-        if sid not in sids:
-            sids.append(sid)
+        entry["cwd"] = cwd         # 会话中途换过目录的话,顺手跟上
     else:
         used = set()
         for other in table.values():
@@ -209,7 +223,7 @@ def acquire(key, sid):
             if off:
                 save(table)
             return None, off, None
-        entry = {"slot": free[0], "ts": now, "sids": [sid]}
+        entry = {"slot": free[0], "ts": now, "cwd": cwd}
         table[key] = entry
 
     off += normalize_single(table)
@@ -220,8 +234,12 @@ def acquire(key, sid):
     return slot_of(entry), off, target_mode(table)
 
 
-def release(key, sid, reason):
-    """回需要熄灯的槽位号。"""
+def release(key, reason):
+    """回需要熄灯的槽位号。
+
+    按会话归属之后这里就没有引用计数了:key 唯一对应一个会话,它结束就是整条租约
+    结束,不必再问「同目录还有没有别人」。
+    """
     now = int(time.time())
     table = load()
     entry = table.get(key)
@@ -229,16 +247,8 @@ def release(key, sid, reason):
         return []
 
     # /clear 和 resume 也报 SessionEnd,但会话还在继续。保住租约只刷时间戳,
-    # 否则灯会灭一下再亮,而且空档期里别的目录可能抢走这颗灯珠。
+    # 否则灯会灭一下再亮,而且空档期里别的会话可能抢走这颗灯珠。
     if reason in ("clear", "resume"):
-        entry["ts"] = now
-        save(table)
-        return []
-
-    sids = entry.get("sids", [])
-    if sid in sids:
-        sids.remove(sid)
-    if sids:                       # 同平台同目录还有别的会话在跑 -> 不熄灯
         entry["ts"] = now
         save(table)
         return []
@@ -261,10 +271,15 @@ def status():
     for n in range(NSLOTS):
         if n in by_slot:
             key, entry = by_slot[n]
-            platform, cwd = split_key(key)
-            print("  %d   [%-*s] %s  (%d 个会话, %d 秒前活动)"
-                  % (n, width, platform, cwd,
-                     len(entry.get("sids", [])), now - entry.get("ts", 0)))
+            platform, sid = split_key(key)
+            # 现在一颗灯珠对一个会话,同一个目录可能占好几颗 —— 光看路径分不清谁是谁,
+            # 所以把 sid 的前 8 位也打出来。cwd 是写路径上记的,可能比实际滞后一点。
+            # 没有 cwd 字段的只可能是还没被 sweep 掉的老租约,退回整个 key,免得
+            # 升级到第一次点灯之间那一小段时间里 status 显示成一片问号。
+            who = "按目录" if sid.startswith("cwd:") else (sid[:8] or "—")
+            print("  %d   [%-*s] %s  (%s, %d 秒前活动)"
+                  % (n, width, platform, entry.get("cwd") or key,
+                     who, now - entry.get("ts", 0)))
         else:
             print("  %d   —" % n)
 
@@ -276,24 +291,29 @@ def main():
         return
 
     hook = read_hook_json()
-    sid = hook.get("session_id") or os.environ.get("LED_SESSION_ID") or "anon"
     reason = hook.get("reason") or ""
-    # 用 $PWD 而不是 getcwd():后者会解析符号链接,同一目录会算成两个归属
-    cwd = os.environ.get("PWD") or os.getcwd()
+    # 展示用。优先信 hook JSON 里的 cwd(那是工具自己报的工作目录),没有才退回 $PWD;
+    # $PWD 而不是 getcwd() 是因为后者会解析符号链接,同一目录会显示成两个样子。
+    cwd = hook.get("cwd") or os.environ.get("PWD") or os.getcwd()
+    # 归属主键。拿不到会话号时退回 cwd 而不是一个固定的 "anon":固定值会让某个工具
+    # 的所有会话挤在同一颗灯珠上,而且谁先结束谁就把灯替所有人熄了。退回 cwd 至少
+    # 保住按目录区分 —— 手动敲 led.sh 排查、以及万一哪个工具不报 session_id 时。
+    sid = (hook.get("session_id") or os.environ.get("LED_SESSION_ID")
+           or "cwd:" + cwd)
     # 平台由调用方自报:hook 命令里的第二个参数最可靠(一眼能在 settings.json 里
     # 看到是谁挂的),脚本/插件这类不方便加参数的走 LED_PLATFORM。两者都没有时
     # 归到 cli —— 手动敲 led.sh 排查时不会顶掉正在跑的会话的灯。
     platform = norm_platform(
         (sys.argv[2] if len(sys.argv) > 2 else "") or os.environ.get("LED_PLATFORM"))
-    key = make_key(platform, cwd)
+    key = make_key(platform, sid)
 
     if cmd == "release":
         # release 不切模式。此刻切到单项目模式,整条灯带会去表现"最后一次 set"的值
         # —— 也就是刚发出去的那个 off,剩下那条租约的灯会莫名熄灭。留给它下次点灯时
         # 切:那时切模式和点亮状态在同一次调用里,不留空档。
-        slot, off, mode = None, release(key, sid, reason), None
+        slot, off, mode = None, release(key, reason), None
     else:
-        slot, off, mode = acquire(key, sid)
+        slot, off, mode = acquire(key, cwd)
 
     # 给 led.sh 的一行,字段用 \037 分隔 —— 不能用制表符:tab 属于 IFS 白空格,
     # bash 的 read 会把连续的 tab 合并成一个,空字段(slot 或 off 为空)会被吃掉,
