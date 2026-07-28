@@ -28,8 +28,8 @@ import { fileURLToPath } from "node:url"
 // 绝对路径是同一个取舍 —— 改了代码立刻生效,代价是仓库不能挪窝。
 const LED_SH = fileURLToPath(new URL("../skills/3dai-led/led.sh", import.meta.url))
 
-// 租约按 (平台, 工作目录) 归属,这个名字决定了 opencode 在每个目录里独占一颗灯珠,
-// 不会和同目录的 claude / codex 抢同一颗。
+// 租约按 (平台, 会话) 归属,平台名进 key 是因为 session_id 跨工具不保证不撞 —— 有了它
+// opencode 的每个会话独占一颗灯珠,不会和同目录的 claude / codex 抢同一颗。
 const PLATFORM = "opencode"
 
 // 工具 → 状态。**故意只列这四个**,理由和 Claude Code 那边 PostToolUse 只挂 Bash 是
@@ -53,9 +53,9 @@ type Info = {
 /**
  * 子进程的环境。
  *
- * lease.py 取 cwd 是读 $PWD 而不是 getcwd()(后者会解析符号链接,同一个目录会被算成
- * 两个归属)。opencode 的服务进程未必跑在项目目录里,所以 cwd 和 PWD 两个都要显式给,
- * 否则租约会落到进程启动时的那个目录上。
+ * cwd 现在只是 status 里的展示字段(归属看 session_id),但仍要显式给准:opencode 的
+ * 服务进程未必跑在项目目录里,不给的话 status 里显示的会是进程启动时的那个目录。
+ * lease.py 优先读 hook JSON 里的 cwd,读不到才退回 $PWD,两个都给是图个稳。
  * LED_SESSION_ID 和 stdin 里的 session_id 是同一个值,给两遍是因为异步那条路是往一个
  * 已经 detach 的子进程的管道里写,写丢了也还有环境变量兜底。
  */
@@ -136,8 +136,8 @@ function watch(directory: string, sessionID: string): ChildProcess | null {
     // 读到 EOF 之后先等一秒再还。opencode 死的那一刻,前面甩出去的那些异步点灯可能还没
     // 跑到 lease.py:抢在它们前面还,租约会被后到的 acquire 重新建出来,灯就一直亮到
     // LED_STALE_MIN 过期。等一秒让它们落地,代价只是灯晚灭一秒,看不出来。
-    // 这一秒里若在同一目录重开了 opencode 也不会误熄:release 只摘自己那个 sid,新会话
-    // 的 sid 还在 sids 里,租约就留着。
+    // 这一秒里若在同一目录重开了 opencode 也不会误熄:租约按会话归属,release 删的是
+    // 自己那条 key,新会话是另一条,碰不着。
     const child = spawn("/bin/sh", ["-c", 'cat >/dev/null 2>&1; sleep 1; printf "%s" "$2" | "$0" release "$1"',
                                     LED_SH, PLATFORM, payload], {
       env: childEnv(directory, sessionID),
@@ -159,17 +159,16 @@ function watch(directory: string, sessionID: string): ChildProcess | null {
 }
 
 export const ledPlugin: Plugin = async ({ directory }) => {
-  // 每个见过的会话对应一个守护进程。归还是按会话逐个还的 —— led.sh release 一次只减
-  // 一个 sid,同一目录下最后一个会话退出时才真正熄灯。
+  // 每个见过的会话对应一个守护进程。租约就是按会话归属的,所以一个守护进程正好还一条。
   const guards = new Map<string, ChildProcess | null>()
 
   // 出错的会话记在这儿,用来吃掉紧随其后的那次 session.idle,理由见下面 session.error 处。
   const failed = new Set<string>()
 
-  // 没有会话号就不点灯。这不是洁癖:lease.py 在拿不到 session_id 时会退化成 "anon" 把
-  // 它记进 sids,而我们也就没法给它挂守护进程,那个 sid 永远还不掉 —— 同目录最后一个
-  // 会话退出时也熄不了灯,得等 LED_STALE_MIN 过期。所有钩子里只有 session.error 的
-  // sessionID 是可选的,就是冲它来的:不挂在任何会话上的错误,本来也不该占一颗灯珠。
+  // 没有会话号就不点灯。这不是洁癖:lease.py 拿不到 session_id 时会退化成按目录归属,
+  // 而我们没有 sid 也就没法给它挂守护进程,那条租约永远还不掉,得等 LED_STALE_MIN 过期。
+  // 所有钩子里只有 session.error 的 sessionID 是可选的,就是冲它来的:不挂在任何会话上
+  // 的错误,本来也不该占一颗灯珠。
   const fire = (state: string, info: Info, sync = false) => {
     const { sessionID } = info
     if (!sessionID) return
@@ -180,7 +179,7 @@ export const ledPlugin: Plugin = async ({ directory }) => {
   const drop = (sessionID: string, event: string, sync: boolean) => {
     if (!guards.has(sessionID)) return
     // 先撤掉守护进程再还租约:让它活着的话,它会在 opencode 退出时再还一次。
-    // 那一次是无害的(lease.py 对已经不在 sids 里的会话直接返回空),但日志里会多出
+    // 那一次是无害的(lease.py 对已经不存在的 key 直接返回空),但日志里会多出
     // 一行看不懂的 release,排查时容易误导。
     const guard = guards.get(sessionID)
     guards.delete(sessionID)

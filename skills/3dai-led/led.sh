@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 3dai-led 槽位租约管理
 #
-#   led.sh <state> [platform]   按 (platform, cwd) 抢占/复用灯珠并点灯
-#   led.sh release [platform]   归还租约;该 (platform, cwd) 再无会话时熄灯
+#   led.sh <state> [platform]   按 (platform, session_id) 抢占/复用灯珠并点灯
+#   led.sh release [platform]   归还该会话的租约并熄灯
 #   led.sh status               打印槽位表(调试用)
 #   led.sh reset                清空全部租约并熄灭所有灯珠(调试用)
 #
@@ -118,7 +118,7 @@ case "${1:-}" in
     if [ -n "${slot:-}" ]; then
       poke "$slot" "$1"
     elif [ -z "${offs:-}" ] && [ -z "${mode:-}" ]; then
-      # 一个请求都没发:release 时 reason=clear,或同目录还有别的会话。
+      # 一个请求都没发:release 时 reason=clear/resume,或者槽位满了没抢到灯珠。
       # 这些恰恰是最需要看的情况,补一行痕迹,免得日志里凭空断掉
       logline "—" "—" "—"
     fi
