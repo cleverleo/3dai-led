@@ -219,7 +219,7 @@ stdin 不是终端时脚本会尝试读取,但有 1 秒超时,调用方不喂数
 | `LED_TS_THROTTLE` | `60` | 刷新 `ts` 的最小间隔秒数,期间只读不写 |
 | `LED_PLATFORM` | `cli` | 平台名,见上;第二个位置参数优先于它 |
 | `LED_SESSION_ID` | — | 会话标识,见上 |
-| `LED_PYTHON` | — | 指定 python3 路径;默认取 `PATH` 里的,回退 `/usr/bin/python3` |
+| `LED_PYTHON` | — | 指定 python3 路径;默认取 `PATH` 里的,回退 `/usr/bin/python3`。安装时设了它,Codex 的 hook 会写死这个路径;不设则写裸的 `python3`,运行时按 Codex 的 `PATH` 现找 |
 | `LED_DEBUG` | `0` | 日志总开关。设为 `1` 时每次点灯往 `debug.log` 追加一行(含触发事件、工具名、curl 返回码);默认一个字节都不落盘 |
 
 设备地址按三级回退取:`LED_HOST` 环境变量 > `$LED_DATA_DIR/host`(`install.sh --host` 写的)> 占位符 `192.168.1.100`。中间那级是关键 —— 从 hook 调用时地址可以由工具的 env 注入,但你在终端里手动敲 `led.sh status` 排查问题时没有那个 env,少了它就会静默打向一个不存在的地址,灯不亮也不报错。改设备地址重跑 `./install.sh --host <新地址>` 即可,或直接改 `data/host` 这一行。
