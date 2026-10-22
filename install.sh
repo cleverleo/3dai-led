@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 3dai-led 安装:把本仓库接进 Claude Code、Codex 和 opencode。
+# 3dai-led 安装:把本仓库接进 Claude Code、Codex、opencode 和 pi。
 #
 # 采用"就地引用"—— hook 里写的是本仓库中 led.sh 的绝对路径,不复制、不做软链接。
 # 改了代码立刻生效,代价是仓库不能挪窝:移动或删除之后要重跑一次本脚本。
@@ -23,9 +23,13 @@ CODEX_HOOK_SOURCE="$REPO/config/codex-hooks.json"
 CODEX_ADAPTER="$REPO/scripts/codex_hook.py"
 OPENCODE_CFG_PY="$REPO/scripts/opencode_config.py"
 OPENCODE_PLUGIN="$REPO/scripts/opencode_plugin.ts"
+PI_CFG_PY="$REPO/scripts/pi_config.py"
+PI_EXTENSION="$REPO/scripts/pi_extension.ts"
 
 SETTINGS="${HOME}/.claude/settings.json"
 CODEX_HOOKS="${CODEX_HOME:-${HOME}/.codex}/hooks.json"
+# PI_CODING_AGENT_DIR 是 pi 自己认的环境变量,改的是整个配置目录
+PI_SETTINGS="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}/settings.json"
 
 # opencode 的配置文件叫 opencode.jsonc 或 opencode.json,两个都合法。已经存在哪个就用
 # 哪个,一个都没有才新建 .json —— 别在用户已有的 .jsonc 旁边再造一份,那样两份配置都
@@ -60,6 +64,7 @@ usage() {
   --opencode-config <path>
                          目标 opencode 配置,默认 ~/.config/opencode/opencode.jsonc
                          (不存在则 opencode.json)
+  --pi-settings <path>   目标 pi settings.json,默认 ~/.pi/agent/settings.json
   --dry-run              只打印将要做的改动,不落盘
   -h, --help             显示本帮助
 
@@ -76,6 +81,7 @@ while [ $# -gt 0 ]; do
     --settings)  SETTINGS="${2:?--settings 需要一个路径}"; shift 2 ;;
     --codex-hooks) CODEX_HOOKS="${2:?--codex-hooks 需要一个路径}"; shift 2 ;;
     --opencode-config) OPENCODE_CFG="${2:?--opencode-config 需要一个路径}"; shift 2 ;;
+    --pi-settings) PI_SETTINGS="${2:?--pi-settings 需要一个路径}"; shift 2 ;;
     --dry-run)   DRY_RUN=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -100,7 +106,7 @@ step "检查环境"
 
 for f in "$LED_SH" "$SKILL_SRC/lease.py" "$HOOKS_CFG" \
          "$CODEX_HOOKS_CFG" "$CODEX_HOOK_SOURCE" "$CODEX_ADAPTER" \
-         "$OPENCODE_CFG_PY" "$OPENCODE_PLUGIN"; do
+         "$OPENCODE_CFG_PY" "$OPENCODE_PLUGIN" "$PI_CFG_PY" "$PI_EXTENSION"; do
   [ -f "$f" ] || { bad "缺少 ${f#$REPO/} —— 仓库不完整?"; exit 1; }
 done
 ok "仓库文件齐全($REPO)"
@@ -257,6 +263,15 @@ printf '  '
 "$PY" "$OPENCODE_CFG_PY" "${OPENCODE_CFG_ARGS[@]}"
 ok "opencode 插件 $OPENCODE_PLUGIN 复用 $LED_SH"
 
+step "写入 pi settings.json"
+
+PI_CFG_ARGS=(install --settings "$PI_SETTINGS" --extension "$PI_EXTENSION")
+[ -n "$DRY_RUN" ] && PI_CFG_ARGS+=(--dry-run)
+
+printf '  '
+"$PY" "$PI_CFG_PY" "${PI_CFG_ARGS[@]}"
+ok "pi 扩展 $PI_EXTENSION 复用 $LED_SH"
+
 # ---------- 6. 自检 ----------
 step "自检"
 
@@ -281,8 +296,10 @@ cat <<EOF
   配置:         $SETTINGS
   Codex 配置:   $CODEX_HOOKS
   opencode 配置:$OPENCODE_CFG
+  pi 配置:      $PI_SETTINGS
 
   仓库移动或删除后灯会失效,届时重跑本脚本即可。
   分别在 Claude Code / Codex 里打开一次 /hooks,重载并信任 hook。
   opencode 的插件在启动时加载,重开一个 opencode 即可生效。
+  pi 的扩展同理,重开一个 pi(或在 pi 里 /reload)即可生效。
 EOF
