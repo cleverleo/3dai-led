@@ -12,7 +12,7 @@ ESP32 + WS2812 灯带(8 颗灯珠),通过局域网 HTTP 控制。让 AI 编码�
 - **HTTP API** — 设备本身的接口,任何能发 HTTP 请求的东西都能驱动它
 - **`led.sh`**(+ 同目录的 `lease.py`)— 槽位租约脚本,解决多个工具 / 多个会话并行时争抢灯珠的问题
 
-接入方式取决于你用的工具在生命周期事件上给了什么口子:能执行命令的(Claude Code、Codex)直接挂 `led.sh`,只有插件机制的(opencode)写一层薄薄的翻译。下面两种都给了完整配置作为示例,其他工具同理。
+接入方式取决于你用的工具在生命周期事件上给了什么口子:能执行命令的(Claude Code、Codex)直接挂 `led.sh`,只有插件机制的(opencode、pi)写一层薄薄的翻译。下面几种都给了完整配置作为示例,其他工具同理。
 
 ---
 
@@ -25,7 +25,7 @@ ESP32 + WS2812 灯带(8 颗灯珠),通过局域网 HTTP 控制。让 AI 编码�
 ./uninstall.sh                     # 卸载(默认保留 leases.json / debug.log,加 --purge 一起删)
 ```
 
-`install.sh` 做这几件事:清理旧版残留的脚本副本、建数据目录、装 `SKILL.md`,然后写三处配置 —— Claude Code 的 `~/.claude/settings.json`(13 条 hook)、Codex 的 `~/.codex/hooks.json`(10 条 hook)、opencode 的 `~/.config/opencode/opencode.jsonc`(1 个插件条目)。三处写前都自动备份成 `<原名>.bak-<时间戳>`,只动 3dai-led 自己的条目,你挂的其他命令 / 插件原样保留。可以反复跑,不会累积重复项;没装某个工具也无所谓,那份配置就是新建一个。
+`install.sh` 做这几件事:清理旧版残留的脚本副本、建数据目录、装 `SKILL.md`,然后写四处配置 —— Claude Code 的 `~/.claude/settings.json`(13 条 hook)、Codex 的 `~/.codex/hooks.json`(10 条 hook)、opencode 的 `~/.config/opencode/opencode.jsonc`(1 个插件条目)、pi 的 `~/.pi/agent/settings.json`(1 个扩展条目)。四处写前都自动备份成 `<原名>.bak-<时间戳>`,只动 3dai-led 自己的条目,你挂的其他命令 / 插件原样保留。可以反复跑,不会累积重复项;没装某个工具也无所谓,那份配置就是新建一个。
 
 **代码是就地引用的** —— hook 里写的是本仓库中 `led.sh` 的绝对路径,不复制、不做软链接。改了代码立刻生效,代价是仓库不能挪窝:移动或删除之后重跑一次 `./install.sh` 即可。
 
@@ -242,7 +242,7 @@ curl -s -m 3 http://<主机名>/status     # 通了才用它
 
 通用做法:在工具的生命周期事件上执行 `led.sh <state> <platform>`,并在会话结束时执行 `led.sh release <platform>`。只要能挂命令,就能接。平台名随便起,同一个工具的所有 hook 用同一个即可 —— 它决定了这个工具在每个目录里独占一颗灯珠。
 
-挂不了命令的(比如 opencode 只有 JS 插件)也不难接:那一层照样只做「事件 → 状态词 → 调 `led.sh`」的翻译,不碰租约、不发 HTTP。见下面 opencode 那节。
+挂不了命令的(比如 opencode 只有 JS 插件、pi 只有 TS 扩展)也不难接:那一层照样只做「事件 → 状态词 → 调 `led.sh`」的翻译,不碰租约、不发 HTTP。见下面 opencode 和 pi 那两节。
 
 事件到灯效的映射建议:
 
@@ -418,6 +418,45 @@ cat >/dev/null 2>&1; sleep 1; printf "%s" "$2" | led.sh release opencode
 
 插件模块里**只能导出一个函数**:opencode 的加载器在模块没有 `server` 导出时,会把每个导出的函数都当成插件调用一遍,导出个辅助函数就会被当插件跑。
 
+### 示例:pi
+
+pi 和 opencode 一样没有 shell hook —— `settings.json` 里没有「在某个事件上执行一条命令」的配置项,只有跑在自己进程里的 TypeScript 扩展,用 `pi.on()` 订阅生命周期事件。所以这一层同样是代码:`scripts/pi_extension.ts`,职责照旧只是「事件 → 状态词 → spawn `led.sh`」。
+
+`./install.sh` 把它的绝对路径写进 `~/.pi/agent/settings.json`(设了 `PI_CODING_AGENT_DIR` 就是那个目录下的)的 `extensions` 数组:
+
+```json
+{ "extensions": ["/path/to/repo/scripts/pi_extension.ts"] }
+```
+
+pi 用 jiti 直接加载 TypeScript,用户级 settings 里的绝对路径原样接受,所以和 opencode 一样就地引用,不复制到 `~/.pi/agent/extensions/`。用户级扩展不走项目信任(`trust.json`)那一套,写上就加载。改完重开一个 pi,或在 pi 里 `/reload`。
+
+| 事件 | 条件 | → 状态 |
+|------|------|--------|
+| `agent_start` | — | thinking |
+| `tool_execution_start` | `bash` | busy |
+| `tool_execution_start` | `edit` / `write` | coding |
+| `tool_execution_end` | `bash` | thinking |
+| `ui_prompt_start` | 一轮进行中、最外层 | waiting |
+| `ui_prompt_end` | 一轮进行中、最外层 | thinking |
+| `session_before_compact` | — | busy |
+| `session_compact` / `session_compact_failed` | 一轮进行中 / 空闲 | thinking / success |
+| `agent_settled` | 最后一条助手消息 `stopReason: "error"` 且非中断 | alarm |
+| `agent_settled` | 其他(含 Esc 中断) | success |
+| `session_shutdown` | `new` / `resume` 到别的会话 / `fork` | `release`(同步) |
+| `session_shutdown` | `reload`、`resume` 到当前会话 | 不释放 |
+| 进程退出(含 `quit`) | — | `release`(守护进程) |
+
+几处和别的工具不一样的地方:
+
+- **结束看 `agent_settled`,不看 `agent_end`。** `agent_end` 之后 pi 还可能自动重试、压缩后续跑,那时亮 `success` / `alarm` 都为时过早。`agent_end` 只记一笔「最后一条助手消息是不是出错」,而且是赋值不是累加 —— 实测每次自动重试都会重新走一遍 `agent_start` / `agent_end`,最后一次说了算,重试成功就不会误报 `alarm`
+- **`waiting` 来自 UI 提示事件。** pi 本身不弹权限框,审批是 `pi-automode` 这类扩展用 `ctx.ui.confirm()` 做的,而所有阻塞式 UI 提示都会发 `ui_prompt_start` / `ui_prompt_end`。只在一轮进行中才算(空闲时自己敲命令弹出的选择框不是「AI 在等你」),嵌套的提示框只在最外层开关时动灯
+- **压缩收尾看场合。** 手动 `/compact` 在空闲时跑,收尾一律回 `thinking` 会让灯在什么都没干时一直转彩虹
+- **`reload` 不释放。** pi 的 `/new`、`/resume`、`/fork`、`/reload` 都会先发 `session_shutdown` 拆掉整个扩展运行时,但 `reload` 换的只是运行时、不是会话 —— 和 Claude Code 的 `SessionEnd` 在 `clear` 时不能释放是同一个道理
+- **仍然要守护进程。** pi 有 `session_shutdown`,但关终端窗口(SIGHUP)、`kill -9` 时扩展根本没机会跑。所以照搬了 opencode 那个管道守护进程(见上一节);正常 `quit` 时也交给它还,省得在退出路径上同步等一次 curl,它那 1 秒延迟还正好让前面的异步点灯先落地
+- **子代理不抢灯。** `pi-subagents` 起的子代理是独立的 pi 进程,会照常加载用户级扩展。扩展见到 `PI_SUBAGENT_CHILD=1` 直接不注册 —— 子代理是父会话「在干活」的一部分,灯只属于父会话
+
+验证同样可以不花 token:pi 会先校验模型名,`--model bogus/bogus` 连会话都起不来;换成在一个临时扩展里 `pi.registerProvider()` 注册一个指向本地死端口(如 `http://127.0.0.1:9/v1`)的假 provider,`pi -ne -e <假provider.ts> -e scripts/pi_extension.ts --model <它>/<模型> -p hi </dev/null` 会走完 `agent_start → 重试 → agent_settled(alarm) → 退出归还` 的完整链路。`</dev/null` 不能省,`-p` 模式会等 stdin。
+
 ### 示例:任意进程 / 脚本
 
 没有 hook 机制的工具,或者想在自己的构建脚本里用:
@@ -453,11 +492,14 @@ led.sh status                               # 2. 当前目录是否拿到槽位
 python3 scripts/hooks_config.py show --settings ~/.claude/settings.json
 python3 scripts/codex_hooks_config.py show --hooks ~/.codex/hooks.json
 python3 scripts/opencode_config.py show --config ~/.config/opencode/opencode.jsonc
+python3 scripts/pi_config.py show --settings ~/.pi/agent/settings.json
 ```
 
 打印出来的路径若指向一个不存在的位置,在仓库新位置重跑 `./install.sh` 即可。
 
 **只有 opencode 的灯不亮** — 先确认插件条目还在(上面第三条命令),再确认它是**第一次处理提示词**时才加载的:`opencode serve` 空跑、只建 session 都不会触发,只发一句话才会。要看它到底跑没跑,`LED_DEBUG=1 opencode` 跑一轮再看 `debug.log` 里有没有 `plat=opencode` 的行。整个仓库被挪走时插件会 import 失败,opencode 不会把这个错打到终端上,表现就是灯静悄悄地不亮。
+
+**只有 pi 的灯不亮** — 先确认扩展条目还在(上面第四条命令),在 pi 里跑 `pi config` 能看到它被列出。扩展在启动时加载,改了配置要重开 pi 或 `/reload`。`LED_DEBUG=1 pi` 跑一轮看 `debug.log` 里有没有 `plat=pi` 的行。若是在 `pi-subagents` 的子代理里,不亮是对的 —— 见 pi 那节。
 
 若 `led.sh status` 报错或没有输出,确认 python3 在 hook 继承的 `PATH` 里(`lease.py` 靠它跑),必要时用 `LED_PYTHON` 显式指定:
 

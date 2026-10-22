@@ -12,9 +12,11 @@ LED_SH="$SKILL_SRC/led.sh"
 HOOKS_CFG="$REPO/scripts/hooks_config.py"
 CODEX_HOOKS_CFG="$REPO/scripts/codex_hooks_config.py"
 OPENCODE_CFG_PY="$REPO/scripts/opencode_config.py"
+PI_CFG_PY="$REPO/scripts/pi_config.py"
 
 SETTINGS="${HOME}/.claude/settings.json"
 CODEX_HOOKS="${CODEX_HOME:-${HOME}/.codex}/hooks.json"
+PI_SETTINGS="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}/settings.json"
 
 # 和 install.sh 同一套取法:已经存在哪个就用哪个,OPENCODE_CONFIG 优先
 OPENCODE_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode"
@@ -43,6 +45,7 @@ usage() {
   --codex-hooks <path> 目标 Codex hooks.json,默认 ~/.codex/hooks.json
   --opencode-config <path>
                      目标 opencode 配置,默认 ~/.config/opencode/opencode.jsonc
+  --pi-settings <path> 目标 pi settings.json,默认 ~/.pi/agent/settings.json
   --dry-run          只打印将要做的改动,不落盘
   -h, --help         显示本帮助
 EOF
@@ -57,6 +60,7 @@ while [ $# -gt 0 ]; do
     --settings)  SETTINGS="${2:?--settings 需要一个路径}"; shift 2 ;;
     --codex-hooks) CODEX_HOOKS="${2:?--codex-hooks 需要一个路径}"; shift 2 ;;
     --opencode-config) OPENCODE_CFG="${2:?--opencode-config 需要一个路径}"; shift 2 ;;
+    --pi-settings) PI_SETTINGS="${2:?--pi-settings 需要一个路径}"; shift 2 ;;
     --dry-run)   DRY_RUN=1; shift ;;
     -h|--help)   usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
@@ -118,6 +122,16 @@ else
   warn "找不到 $OPENCODE_CFG 或 opencode_config.py,跳过"
 fi
 
+step "清理 pi settings.json"
+if [ -f "$PI_SETTINGS" ] && [ -f "$PI_CFG_PY" ]; then
+  PI_CFG_ARGS=(remove --settings "$PI_SETTINGS")
+  [ -n "$DRY_RUN" ] && PI_CFG_ARGS+=(--dry-run)
+  printf '  '
+  "$PY" "$PI_CFG_PY" "${PI_CFG_ARGS[@]}"
+else
+  warn "找不到 $PI_SETTINGS 或 pi_config.py,跳过"
+fi
+
 # ---------- 3. 技能 ----------
 step "移除技能"
 if [ -L "$SKILL_DST" ]; then
@@ -155,4 +169,5 @@ else
   echo "  仓库本身未改动:$REPO"
   echo "  分别在 Claude Code / Codex 里打开一次 /hooks,重载配置。"
   echo "  opencode 的插件在启动时加载,重开一个 opencode 即可生效。"
+  echo "  pi 的扩展同理,重开一个 pi 即可生效。"
 fi
