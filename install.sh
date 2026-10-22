@@ -240,8 +240,11 @@ ok "hook 指向 $LED_SH"
 
 step "写入 Codex hooks.json"
 
+# 解释器写裸的 python3,由 Codex 跑 hook 时按它自己的 PATH 现找,而不是把
+# 上面查到的 $PY 写死成绝对路径 —— 那会随 homebrew / mise 换版本、卸载而
+# 变成死链,Codex 的灯就全灭(实测过)。显式给了 LED_PYTHON 才写死它。
 CODEX_CFG_ARGS=(install --hooks "$CODEX_HOOKS" --source "$CODEX_HOOK_SOURCE" \
-  --python "$PY" --adapter "$CODEX_ADAPTER")
+  --python "${LED_PYTHON:-python3}" --adapter "$CODEX_ADAPTER")
 [ -n "$DRY_RUN" ] && CODEX_CFG_ARGS+=(--dry-run)
 
 printf '  '
